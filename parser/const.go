@@ -1,14 +1,11 @@
 package parser
 
 import (
-	"fmt"
 	"path/filepath"
-)
 
-type extension struct {
-	name     string
-	language string
-}
+	"github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter/grammars"
+)
 
 var extensions = map[string]string{
 	".ts":   "typescript",
@@ -27,29 +24,26 @@ var extensions = map[string]string{
 }
 
 func DetectLanguage(filePath string) string {
-	ext := filepath.Ext(filePath)
-	if language, ok := extensions[ext]; ok {
-		return language
-	}
-	fmt.Sprint("another languague detect or something off")
-	return ""
+	return extensions[filepath.Ext(filePath)]
 }
 
-func GetGrammar(language string) string {
+// GetLanguage returns the native tree-sitter grammar for a language name.
+// It returns nil for unsupported languages.
+func GetLanguage(language string) *gotreesitter.Language {
 	switch language {
 	case "typescript":
-		return "tree-sitter-typescript/tree-sitter-tsx.wasm"
+		return grammars.TsxLanguage()
 	case "javascript":
-		return "tree-sitter-javascript/tree-sitter-jsx.wasm"
+		return grammars.JavascriptLanguage()
 	case "python":
-		return "tree-sitter-python/tree-sitter-python.wasm"
+		return grammars.PythonLanguage()
 	case "rust":
-		return "tree-sitter-rust/tree-sitter-rust.wasm"
+		return grammars.RustLanguage()
 	case "go":
-		return "tree-sitter-go/tree-sitter-go.wasm"
+		return grammars.GoLanguage()
 	case "java":
-		return "tree-sitter-java/tree-sitter-java.wasm"
+		return grammars.JavaLanguage()
 	default:
-		return ""
+		return nil
 	}
 }

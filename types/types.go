@@ -1,5 +1,7 @@
 package types
 
+import "github.com/odvcencio/gotreesitter"
+
 type Language string
 
 // ----------------------------------------------------
@@ -53,12 +55,12 @@ func (e *ParseError) Error() string {
 }
 
 type ParseResult struct {
-	Tree   any // replace with sitter type later or binding type
+	Tree   *gotreesitter.Tree
 	Errors []*ParseError
 }
 
-type SyntaxNode any
-type SyntaxTree any
+type SyntaxNode *gotreesitter.Node
+type SyntaxTree *gotreesitter.Tree
 
 // ============================================================================
 // Extracted Entities & Scope
