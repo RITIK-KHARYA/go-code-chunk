@@ -220,3 +220,67 @@ type Chunker interface {
 	// ChunkBatchStream is left as a channel-based API for simplicity.
 	ChunkBatchStream(files []FileInput, opts BatchOptions) (<-chan BatchResult, <-chan error)
 }
+
+// ============================================================================
+// Batch Processing
+// ============================================================================
+
+// FileInput represents a single file to chunk.
+type FileInput struct {
+	Filepath string
+	Code     string
+	Options  *ChunkOptions // nil = use batch options
+}
+
+// BatchFileResult is a successful result for one file.
+type BatchFileResult struct {
+	Filepath string
+	Chunks   []Chunk
+	Error    error // always nil on success
+}
+
+// BatchFileError is an error result for one file.
+type BatchFileError struct {
+	Filepath string
+	Chunks   []Chunk // always nil
+	Error    error
+}
+
+// BatchResult is the union of success / error for a single file.
+// In Go we usually just use a struct that can hold either.
+type BatchResult struct {
+	Filepath string
+	Chunks   []Chunk // nil on error
+	Error    error   // nil on success
+}
+
+// IsSuccess reports whether the result is successful.
+func (r BatchResult) IsSuccess() bool {
+	return r.Error == nil
+}
+
+// BatchOptions extends ChunkOptions with concurrency controls.
+type BatchOptions struct {
+	ChunkOptions
+
+	// Concurrency is the maximum number of files processed concurrently.
+	// Default: 10
+	Concurrency int
+
+	// OnProgress is called after each file is processed.
+	// It is optional (nil = no callback).
+	OnProgress func(completed, total int, filepath string, success bool)
+}
+
+// DefaultBatchOptions returns sensible defaults.
+func DefaultBatchOptions() BatchOptions {
+	return BatchOptions{
+		ChunkOptions: DefaultChunkOptions(),
+		Concurrency:  10,
+	}
+}
+
+// reading comments with same type *string
+func strptr(s string) *string {
+	return &s
+}
