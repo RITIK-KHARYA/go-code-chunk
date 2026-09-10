@@ -284,3 +284,10 @@ func DefaultBatchOptions() BatchOptions {
 func strptr(s string) *string {
 	return &s
 }
+
+// Example of how you might create a ParseError
+func NewParseError(msg string, recoverable bool) *ParseError {
+	return &ParseError{Message: msg, Recoverable: recoverable}
+}
+
+// Sentinel error you can use
