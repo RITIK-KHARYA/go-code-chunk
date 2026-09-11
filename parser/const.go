@@ -2,9 +2,24 @@ package parser
 
 import (
 	"path/filepath"
+	"sync"
 
 	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
+)
+
+type GrammerLoadError struct {
+	lang  string
+	cause error
+}
+
+func (e *GrammerLoadError) Error() string {
+	return "failed to load grammar for " + e.lang + ": " + e.cause.Error()
+}
+
+var (
+	GrammerCacheMutex sync.RWMutex
+	GrammerCache      = map[string]*gotreesitter.Language{}
 )
 
 var extensions = map[string]string{
@@ -29,21 +44,51 @@ func DetectLanguage(filePath string) string {
 
 // GetLanguage returns the native tree-sitter grammar for a language name.
 // It returns nil for unsupported languages.
-func GetLanguage(language string) *gotreesitter.Language {
+func LoadLanguage(language string) (*gotreesitter.Language, error) {
 	switch language {
 	case "typescript":
-		return grammars.TsxLanguage()
+		return grammars.TsxLanguage(), nil
 	case "javascript":
-		return grammars.JavascriptLanguage()
+		return grammars.JavascriptLanguage(), nil
 	case "python":
-		return grammars.PythonLanguage()
+		return grammars.PythonLanguage(), nil
 	case "rust":
-		return grammars.RustLanguage()
+		return grammars.RustLanguage(), nil
 	case "go":
-		return grammars.GoLanguage()
+		return grammars.GoLanguage(), nil
 	case "java":
-		return grammars.JavaLanguage()
+		return grammars.JavaLanguage(), nil
 	default:
-		return nil
+		return nil, nil
 	}
+}
+
+func GetLanguage(language string) (*gotreesitter.Language, error) {
+	GrammerCacheMutex.RLock()
+	GrammerCacheMutex.RUnlock()
+
+	if cached, ok := GrammerCache[language]; ok {
+		return cached, nil
+	}
+	GrammerCacheMutex.Lock()
+	defer GrammerCacheMutex.Unlock()
+
+	lang, err := LoadLanguage(language)
+	if err != nil {
+		return nil, err
+	}
+	if lang == nil {
+		return nil, nil
+	}
+	GrammerCache[language] = lang
+	return lang, nil
+}
+
+// for testing and debugging only
+// creating function that will handle the empty cache
+
+func ClearCache() {
+	GrammerCacheMutex.Lock()
+	defer GrammerCacheMutex.Unlock()
+	GrammerCache = map[string]*gotreesitter.Language{}
 }
