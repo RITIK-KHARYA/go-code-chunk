@@ -65,13 +65,20 @@ func LoadLanguage(language string) (*gotreesitter.Language, error) {
 
 func GetLanguage(language string) (*gotreesitter.Language, error) {
 	GrammerCacheMutex.RLock()
+	cached, ok := GrammerCache[language]
 	GrammerCacheMutex.RUnlock()
 
+	if ok {
+		return cached, nil
+	}
+
+	GrammerCacheMutex.Lock()
+	defer GrammerCacheMutex.Unlock()
+
+	// Double-check: another goroutine may have loaded it while we waited.
 	if cached, ok := GrammerCache[language]; ok {
 		return cached, nil
 	}
-	GrammerCacheMutex.Lock()
-	defer GrammerCacheMutex.Unlock()
 
 	lang, err := LoadLanguage(language)
 	if err != nil {

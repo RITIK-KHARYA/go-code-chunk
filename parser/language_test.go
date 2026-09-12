@@ -2,6 +2,7 @@ package parser
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/odvcencio/gotreesitter"
@@ -63,13 +64,44 @@ func TestDetectLanguage(t *testing.T) {
 
 func TestGetLanguageSupported(t *testing.T) {
 	for _, lang := range []string{"typescript", "javascript", "python", "rust", "go", "java"} {
-		if GetLanguage(lang) == nil {
+		l, err := GetLanguage(lang)
+		if err != nil {
+			t.Errorf("GetLanguage(%q) error = %v, want nil", lang, err)
+		}
+		if l == nil {
 			t.Errorf("GetLanguage(%q) = nil, want non-nil", lang)
 		}
 	}
-	if GetLanguage("brainfuck") != nil {
-		t.Error("GetLanguage(brainfuck) = non-nil, want nil")
+
+	l, err := GetLanguage("brainfuck")
+	if err != nil {
+		t.Errorf("GetLanguage(brainfuck) error = %v, want nil", err)
 	}
+	if l != nil {
+		t.Errorf("GetLanguage(brainfuck) = non-nil, want nil")
+	}
+}
+
+func TestGetLanguageConcurrent(t *testing.T) {
+	ClearCache()
+	const goroutines = 32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for _, lang := range []string{"go", "rust", "python", "java", "javascript", "typescript"} {
+				if _, err := GetLanguage(lang); err != nil {
+					t.Errorf("concurrent GetLanguage(%q) error = %v", lang, err)
+				}
+			}
+			if l, _ := GetLanguage("brainfuck"); l != nil {
+				t.Error("concurrent GetLanguage(brainfuck) = non-nil, want nil")
+			}
+		}()
+	}
+	wg.Wait()
+	ClearCache()
 }
 
 func TestUnsupportedLanguage(t *testing.T) {

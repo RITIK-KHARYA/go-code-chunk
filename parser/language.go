@@ -14,7 +14,10 @@ type Parser struct {
 // NewParser creates a parser for the given language name (see GetLanguage).
 // It returns UnsupportedLanguageError for languages without a grammar.
 func NewParser(language string) (*Parser, error) {
-	lang := GetLanguage(language)
+	lang, err := GetLanguage(language)
+	if err != nil {
+		return nil, err
+	}
 	if lang == nil {
 		return nil, cerrors.NewUnsupportedLanguageError(language)
 	}
