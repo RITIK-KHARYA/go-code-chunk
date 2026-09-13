@@ -21,6 +21,9 @@ func NewScopeNode(entity types.ExtractedEntity, parent *types.ScopeNode) *types.
 	}
 }
 
+// find the deepest and most closet parent node for the given entity
+// example:
+// x -- parent and x2 is child node so x2's parent is x
 // FindParentNode - deepest node whose range contains entity's range, DFS
 func FindParentNode(roots []*types.ScopeNode, entity types.ExtractedEntity) *types.ScopeNode {
 	var findInNode func(node *types.ScopeNode) *types.ScopeNode
@@ -48,6 +51,8 @@ func FindParentNode(roots []*types.ScopeNode, entity types.ExtractedEntity) *typ
 func BuildScopeTreeFromEntities(entities []types.ExtractedEntity) types.ScopeTree {
 	var imports, exports, scopeEntities []types.ExtractedEntity
 
+	// separate imports, exports, and scope entities
+	// later we sort them by byte range to build the tree
 	for _, entity := range entities {
 		switch entity.Type {
 		case types.EntityTypeImport:
