@@ -243,19 +243,24 @@ func TestGetBodyDelimiter(t *testing.T) {
 }
 
 func TestFindBodyDelimiterPos(t *testing.T) {
-	// delimiter inside a parameter list must not match
-	if got := findBodyDelimiterPos("func f(a, b int) int {", "{"); got != 21 {
-		t.Fatalf("paren case = %d, want 21", got)
+	cases := []struct {
+		name, text, delimiter string
+		want                  int
+	}{
+		{"paren", "func f(a, b int) int {", "{", 21},
+		{"generic", "interface Box<T> {}", "{", 17},
+		{"string", "const s = {\"}\"};", "{", 10},
+		{"missing", "no delimiter here", "{", -1},
+		{"negative-depth", "func f() ) {", "{", -1},
+		{"le-not-generic", "a <= b {", "{", 7},
+		{"dbl-lt-generic", "a << b {", "{", -1},
+		{"py-colon-outside-params", "def f(a: int): {}", ":", 13},
 	}
-	// delimiter inside generics must not match
-	if got := findBodyDelimiterPos("interface Box<T> {}", "{"); got != 17 {
-		t.Fatalf("generic case = %d, want 17", got)
-	}
-	// string literal containing a brace must not match
-	if got := findBodyDelimiterPos("const s = {\"}\"};", "{"); got != 10 {
-		t.Fatalf("string case = %d, want 10", got)
-	}
-	if got := findBodyDelimiterPos("no delimiter here", "{"); got != -1 {
-		t.Fatalf("missing case = %d, want -1", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := findBodyDelimiterPos(tc.text, tc.delimiter); got != tc.want {
+				t.Fatalf("findBodyDelimiterPos(%q, %q) = %d, want %d", tc.text, tc.delimiter, got, tc.want)
+			}
+		})
 	}
 }

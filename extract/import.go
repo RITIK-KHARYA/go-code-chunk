@@ -86,11 +86,24 @@ func ExtractImportSource(node *gotreesitter.Node, language types.Language, code 
 		}
 
 	case types.LanguagePython:
-		// For 'from X import Y', look for module_name field or dotted_name
+		// For 'from X import Y', look for module_name field
 		if moduleName := node.ChildByFieldName("module_name", lang); moduleName != nil {
 			return moduleName.Text([]byte(code)), true
 		}
-		// For 'import X' / 'import X as Y', descend into dotted_name
+		// For 'import X' style, try name field first (covers some grammars).
+		// On this binding the field may point at an aliased_import; descend into
+		// its dotted_name in that case.
+		if name := node.ChildByFieldName("name", lang); name != nil {
+			if name.Type(lang) == "aliased_import" {
+				for _, sub := range name.Children() {
+					if sub.Type(lang) == "dotted_name" {
+						return sub.Text([]byte(code)), true
+					}
+				}
+			}
+			return name.Text([]byte(code)), true
+		}
+		// Fallback: descend into children for dotted_name / aliased_import
 		for _, child := range node.Children() {
 			switch child.Type(lang) {
 			case "aliased_import":
@@ -102,10 +115,6 @@ func ExtractImportSource(node *gotreesitter.Node, language types.Language, code 
 			case "dotted_name":
 				return child.Text([]byte(code)), true
 			}
-		}
-		// Fallback: the name field (covers older grammars without aliased_import)
-		if name := node.ChildByFieldName("name", lang); name != nil {
-			return name.Text([]byte(code)), true
 		}
 
 	case types.LanguageRust:

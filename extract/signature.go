@@ -72,15 +72,11 @@ func findBodyDelimiterPos(text string, delimiter string) int {
 		case '(':
 			parenDepth++
 		case ')':
-			if parenDepth > 0 {
-				parenDepth--
-			}
+			parenDepth--
 		case '[':
 			bracketDepth++
 		case ']':
-			if bracketDepth > 0 {
-				bracketDepth--
-			}
+			bracketDepth--
 		case '<':
 			// Only count as generic bracket if followed by identifier or another <
 			// This helps avoid matching comparison operators like <, <=, <<
@@ -149,7 +145,7 @@ func tryExtractSignatureFromBody(node *gotreesitter.Node, code string, language 
 // extractFunctionSignature extracts the signature for function/method entities.
 // It tries the AST body field first, then falls back to text-based extraction.
 func extractFunctionSignature(node *gotreesitter.Node, language types.Language, code string, lang *gotreesitter.Language) string {
-	if sig, ok := tryExtractSignatureFromBody(node, code, language, lang); ok {
+	if sig, ok := tryExtractSignatureFromBody(node, code, language, lang); ok && sig != "" {
 		return sig
 	}
 
@@ -167,7 +163,7 @@ func extractFunctionSignature(node *gotreesitter.Node, language types.Language, 
 
 // extractClassSignature extracts the signature for class/interface entities.
 func extractClassSignature(node *gotreesitter.Node, language types.Language, code string, lang *gotreesitter.Language) string {
-	if sig, ok := tryExtractSignatureFromBody(node, code, language, lang); ok {
+	if sig, ok := tryExtractSignatureFromBody(node, code, language, lang); ok && sig != "" {
 		return sig
 	}
 
