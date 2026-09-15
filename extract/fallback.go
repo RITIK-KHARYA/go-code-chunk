@@ -41,7 +41,7 @@ func walkAndExtract(rootNode *gotreesitter.Node, language types.Language, lang *
 			}
 
 			if entityType == types.EntityTypeImport {
-				*entities = append(*entities, extractImportEntities(node, language, code)...)
+				*entities = append(*entities, ExtractImportSymbols(node, language, code)...)
 				continue
 			}
 
@@ -95,28 +95,6 @@ func walkAndExtract(rootNode *gotreesitter.Node, language types.Language, lang *
 			stack = append(stack, stackItem{node: children[i], parentName: item.parentName})
 		}
 	}
-}
-
-// extractImportEntities builds the import entities for an import node.
-// It mirrors the extractImportSymbols behavior of emitting one entity per
-// import node. NOTE: the full multi-symbol import splitting of the TS
-// imports module has not been translated yet.
-func extractImportEntities(node *gotreesitter.Node, language types.Language, code string) []types.ExtractedEntity {
-	source, ok := ExtractImportSource(node, language, code)
-	if !ok {
-		return nil
-	}
-
-	entity := types.ExtractedEntity{
-		Type:      types.EntityTypeImport,
-		Name:      source,
-		Signature: source,
-		ByteRange: types.ByteRange{Start: int(node.StartByte()), End: int(node.EndByte())},
-		LineRange: types.LineRange{Start: int(node.StartPoint().Row), End: int(node.EndPoint().Row)},
-		Source:    &source,
-		Node:      node,
-	}
-	return []types.ExtractedEntity{entity}
 }
 
 // ExtractEntitiesByNodeTypes extracts entities by matching node types,

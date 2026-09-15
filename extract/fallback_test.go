@@ -13,6 +13,7 @@ type entityView struct {
 	name   string
 	sign   string
 	parent *string
+	source *string
 }
 
 func collectViews(t *testing.T, language, src string) []entityView {
@@ -32,7 +33,7 @@ func collectViews(t *testing.T, language, src string) []entityView {
 	entities := ExtractEntitiesByNodeTypes(tree.RootNode(), types.Language(language), src)
 	views := make([]entityView, 0, len(entities))
 	for _, e := range entities {
-		views = append(views, entityView{typ: e.Type, name: e.Name, sign: e.Signature, parent: e.Parent})
+		views = append(views, entityView{typ: e.Type, name: e.Name, sign: e.Signature, parent: e.Parent, source: e.Source})
 	}
 	return views
 }
@@ -59,7 +60,7 @@ func main() {
 `
 
 	want := []entityView{
-		{typ: types.EntityTypeImport, name: "fmt", sign: "fmt"},
+		{typ: types.EntityTypeImport, name: "fmt", sign: "fmt", source: new("fmt")},
 		{typ: types.EntityTypeType, name: "<anonymous>", sign: "type Person struct"},
 		{typ: types.EntityTypeMethod, name: "Greet", sign: "func (p *Person) Greet() string"},
 		{typ: types.EntityTypeFunction, name: "main", sign: "func main()"},
@@ -71,7 +72,7 @@ func main() {
 	}
 }
 
-func TestExtractEntitiesByNodeTypesGoImportSource(t *testing.T) {
+func TestExtractEntitiesByNodeTypesGoImportSymbols(t *testing.T) {
 	src := `package main
 
 import (
@@ -79,9 +80,29 @@ import (
 	"path/filepath"
 )
 `
+	want := []entityView{
+		{typ: types.EntityTypeImport, name: "os", sign: "os", source: new("os")},
+		{typ: types.EntityTypeImport, name: "path/filepath", sign: "path/filepath", source: new("path/filepath")},
+	}
+
 	got := collectViews(t, "go", src)
-	if len(got) != 1 || got[0].typ != types.EntityTypeImport || got[0].name != "os" {
-		t.Fatalf("entities = %+v, want single import os", got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entities = %+v, want %+v", got, want)
+	}
+}
+
+func TestExtractEntitiesByNodeTypesGoAliasedImport(t *testing.T) {
+	src := `package main
+
+import jsonf "encoding/json"
+`
+	want := []entityView{
+		{typ: types.EntityTypeImport, name: "jsonf", sign: "jsonf", source: new("encoding/json")},
+	}
+
+	got := collectViews(t, "go", src)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entities = %+v, want %+v", got, want)
 	}
 }
 
@@ -152,15 +173,53 @@ fn main() {}
 
 func TestExtractEntitiesByNodeTypesPythonImports(t *testing.T) {
 	src := `import numpy as np
-from os import path
+from os import path, sep
+from os.path import join as j
 `
 
 	want := []entityView{
-		{typ: types.EntityTypeImport, name: "numpy", sign: "numpy"},
-		{typ: types.EntityTypeImport, name: "os", sign: "os"},
+		{typ: types.EntityTypeImport, name: "numpy", sign: "numpy", source: new("numpy")},
+		{typ: types.EntityTypeImport, name: "path", sign: "path", source: new("os")},
+		{typ: types.EntityTypeImport, name: "sep", sign: "sep", source: new("os")},
+		{typ: types.EntityTypeImport, name: "join", sign: "join", source: new("os.path")},
 	}
 
 	got := collectViews(t, "python", src)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entities = %+v, want %+v", got, want)
+	}
+}
+
+func TestExtractEntitiesByNodeTypesRustImportSymbols(t *testing.T) {
+	src := `use std::collections::{HashMap, HashSet};
+use std::io;
+`
+	want := []entityView{
+		{typ: types.EntityTypeImport, name: "HashMap", sign: "HashMap", source: new("std::collections")},
+		{typ: types.EntityTypeImport, name: "HashSet", sign: "HashSet", source: new("std::collections")},
+		{typ: types.EntityTypeImport, name: "std::io", sign: "std::io", source: new("std::io")},
+	}
+
+	got := collectViews(t, "rust", src)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entities = %+v, want %+v", got, want)
+	}
+}
+
+func TestExtractEntitiesByNodeTypesTSImportSymbols(t *testing.T) {
+	src := `import 'polyfill';
+import d, { a, b } from 'x';
+import * as ns from 'y';
+`
+	want := []entityView{
+		{typ: types.EntityTypeImport, name: "polyfill", sign: "polyfill", source: new("polyfill")},
+		{typ: types.EntityTypeImport, name: "d", sign: "d", source: new("x")},
+		{typ: types.EntityTypeImport, name: "a", sign: "a", source: new("x")},
+		{typ: types.EntityTypeImport, name: "b", sign: "b", source: new("x")},
+		{typ: types.EntityTypeImport, name: "ns", sign: "ns", source: new("y")},
+	}
+
+	got := collectViews(t, "typescript", src)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("entities = %+v, want %+v", got, want)
 	}
