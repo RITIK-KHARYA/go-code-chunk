@@ -177,9 +177,9 @@ func extractClassSignature(node *gotreesitter.Node, language types.Language, cod
 
 	if delimPos == -1 {
 		// No body - return first line or full text
-		firstNewline := strings.IndexByte(nodeText, '\n')
-		if firstNewline != -1 {
-			return cleanSignature(nodeText[:firstNewline])
+		before, _, ok := strings.Cut(nodeText, "\n")
+		if ok {
+			return cleanSignature(before)
 		}
 		return cleanSignature(nodeText)
 	}
@@ -213,9 +213,9 @@ func extractTypeSignature(node *gotreesitter.Node, language types.Language, code
 
 	if delimPos == -1 {
 		// No delimiter found - return first line or full text
-		firstNewline := strings.IndexByte(nodeText, '\n')
-		if firstNewline != -1 {
-			return cleanSignature(nodeText[:firstNewline])
+		before, _, ok := strings.Cut(nodeText, "\n")
+		if ok {
+			return cleanSignature(before)
 		}
 		return cleanSignature(nodeText)
 	}
@@ -262,9 +262,9 @@ func ExtractSignature(node *gotreesitter.Node, entityType types.EntityType, lang
 	default:
 		// Fallback: extract first line
 		nodeText := code[node.StartByte():node.EndByte()]
-		firstNewline := strings.IndexByte(nodeText, '\n')
-		if firstNewline != -1 {
-			return cleanSignature(nodeText[:firstNewline])
+		before, _, ok := strings.Cut(nodeText, "\n")
+		if ok {
+			return cleanSignature(before)
 		}
 		return cleanSignature(nodeText)
 	}

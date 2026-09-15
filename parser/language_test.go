@@ -87,7 +87,7 @@ func TestGetLanguageConcurrent(t *testing.T) {
 	const goroutines = 32
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 			for _, lang := range []string{"go", "rust", "python", "java", "javascript", "typescript"} {

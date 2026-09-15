@@ -283,8 +283,10 @@ func DefaultBatchOptions() BatchOptions {
 }
 
 // reading comments with same type *string
+//
+//go:fix inline
 func strptr(s string) *string {
-	return &s
+	return new(s)
 }
 
 // Example of how you might create a ParseError

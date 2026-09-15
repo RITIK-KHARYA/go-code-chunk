@@ -1,6 +1,8 @@
 package extract
 
 import (
+	"slices"
+
 	"github.com/RITIK-KHARYA/go-code-chunk/parser"
 	"github.com/RITIK-KHARYA/go-code-chunk/types"
 	"github.com/odvcencio/gotreesitter"
@@ -19,12 +21,7 @@ func hasType(n *gotreesitter.Node, lang *gotreesitter.Language, nodeTypes ...str
 		return false
 	}
 	t := n.Type(lang)
-	for _, want := range nodeTypes {
-		if t == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(nodeTypes, t)
 }
 
 // previousNamedSibling returns the previous named sibling of n, or nil if none.
@@ -41,7 +38,7 @@ func previousNamedSibling(n *gotreesitter.Node) *gotreesitter.Node {
 func namedChildren(n *gotreesitter.Node) []*gotreesitter.Node {
 	count := n.NamedChildCount()
 	children := make([]*gotreesitter.Node, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if child := n.NamedChild(i); child != nil {
 			children = append(children, child)
 		}
