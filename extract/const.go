@@ -1,5 +1,7 @@
 package extract
 
+import "slices"
+
 import "github.com/RITIK-KHARYA/go-code-chunk/types"
 
 // EntityNodeTypes are the AST node types considered extractable entities per
@@ -100,12 +102,7 @@ var NodeTypeToEntityType = map[string]types.EntityType{
 // IsEntityNodeType reports whether nodeType represents an entity for the
 // given language.
 func IsEntityNodeType(nodeType string, language types.Language) bool {
-	for _, t := range EntityNodeTypes[language] {
-		if t == nodeType {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(EntityNodeTypes[language], nodeType)
 }
 
 // GetEntityType returns the entity type for a node type.

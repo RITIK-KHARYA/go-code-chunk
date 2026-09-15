@@ -37,7 +37,8 @@ func collectViews(t *testing.T, language, src string) []entityView {
 	return views
 }
 
-func strptr(s string) *string { return &s }
+//go:fix inline
+func strptr(s string) *string { return new(s) }
 
 func TestExtractEntitiesByNodeTypesGo(t *testing.T) {
 	src := `package main
@@ -95,7 +96,7 @@ function helper() {}
 
 	want := []entityView{
 		{typ: types.EntityTypeClass, name: "Person", sign: "class Person"},
-		{typ: types.EntityTypeMethod, name: "greet", sign: "greet(): string", parent: strptr("Person")},
+		{typ: types.EntityTypeMethod, name: "greet", sign: "greet(): string", parent: new("Person")},
 		{typ: types.EntityTypeFunction, name: "helper", sign: "function helper()"},
 	}
 
@@ -116,7 +117,7 @@ def top():
 
 	want := []entityView{
 		{typ: types.EntityTypeClass, name: "Greeter", sign: "class Greeter"},
-		{typ: types.EntityTypeFunction, name: "hello", sign: "def hello(self)", parent: strptr("Greeter")},
+		{typ: types.EntityTypeFunction, name: "hello", sign: "def hello(self)", parent: new("Greeter")},
 		{typ: types.EntityTypeFunction, name: "top", sign: "def top()"},
 	}
 
@@ -139,7 +140,7 @@ fn main() {}
 	want := []entityView{
 		{typ: types.EntityTypeType, name: "Point", sign: "struct Point"},
 		{typ: types.EntityTypeClass, name: "Point", sign: "impl Point"},
-		{typ: types.EntityTypeFunction, name: "dist", sign: "fn dist(&self) -> i32", parent: strptr("Point")},
+		{typ: types.EntityTypeFunction, name: "dist", sign: "fn dist(&self) -> i32", parent: new("Point")},
 		{typ: types.EntityTypeFunction, name: "main", sign: "fn main()"},
 	}
 
