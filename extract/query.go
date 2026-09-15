@@ -2,46 +2,10 @@ package extract
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/RITIK-KHARYA/go-code-chunk/parser"
 	"github.com/RITIK-KHARYA/go-code-chunk/types"
 	"github.com/odvcencio/gotreesitter"
-)
-
-// CompiledQuery is a compiled tree-sitter query for a specific grammar.
-type CompiledQuery = *gotreesitter.Query
-
-// QueryCapture is a single captured node within a match.
-type QueryCapture struct {
-	Name         string
-	Node         *gotreesitter.Node
-	PatternIndex int
-}
-
-// QueryMatch is a successful pattern match with its captures.
-type QueryMatch struct {
-	PatternIndex int
-	Captures     []QueryCapture
-}
-
-// QueryResult is the outcome of executing a query against a tree.
-type QueryResult struct {
-	Matches  []QueryMatch
-	Captures []QueryCapture
-}
-
-// EntityExtraction is the structured result of extractEntityFromMatch.
-type EntityExtraction struct {
-	ItemNode        *gotreesitter.Node
-	NameNode        *gotreesitter.Node // nil when absent
-	ContextNodes    []*gotreesitter.Node
-	AnnotationNodes []*gotreesitter.Node
-}
-
-var (
-	queryCacheMu sync.RWMutex
-	queryCache   = map[types.Language]CompiledQuery{}
 )
 
 // LoadQuery returns the compiled entity-extraction query for a language,

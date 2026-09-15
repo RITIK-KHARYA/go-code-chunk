@@ -10,19 +10,19 @@ import (
 	"github.com/odvcencio/gotreesitter"
 )
 
-// CommentNodeTypes are the comment node types by language. Python also uses
-// string literals as docstrings.
+// pythonStringTypes are Python docstring node types (triple-quoted strings).
+var pythonStringTypes = []string{"string", "string_content"}
+
+// CommentNodeTypes lists the AST node types that represent comments per
+// language.
 var CommentNodeTypes = map[types.Language][]string{
 	types.LanguageTypeScript: {"comment", "multiline_comment"},
 	types.LanguageJavaScript: {"comment", "multiline_comment"},
 	types.LanguagePython:     {"comment", "string"},
-	types.LanguageRust:       {"line_comment", "block_comment"},
+	types.LanguageRust:       {"line_comment", "block_comment", "doc_comment"},
 	types.LanguageGo:         {"comment"},
 	types.LanguageJava:       {"line_comment", "block_comment"},
 }
-
-// pythonStringTypes are Python docstring node types (triple-quoted strings).
-var pythonStringTypes = []string{"string", "string_content"}
 
 var jsDocStartRe = regexp.MustCompile(`^/\*\*[^*]`)
 

@@ -9,8 +9,8 @@ type Language string
 // ----------------------------------------------------
 
 type LineRange struct {
-	start int
-	end   int
+	Start int // 0-indexed, inclusive
+	End   int // 0-indexed, inclusive
 }
 
 type ByteRange struct {

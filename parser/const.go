@@ -8,18 +8,18 @@ import (
 	"github.com/odvcencio/gotreesitter/grammars"
 )
 
-type GrammerLoadError struct {
+type GrammarLoadError struct {
 	lang  string
 	cause error
 }
 
-func (e *GrammerLoadError) Error() string {
+func (e *GrammarLoadError) Error() string {
 	return "failed to load grammar for " + e.lang + ": " + e.cause.Error()
 }
 
 var (
-	GrammerCacheMutex sync.RWMutex
-	GrammerCache      = map[string]*gotreesitter.Language{}
+	GrammarCacheMutex sync.RWMutex
+	GrammarCache      = map[string]*gotreesitter.Language{}
 )
 
 var extensions = map[string]string{
@@ -64,19 +64,19 @@ func LoadLanguage(language string) (*gotreesitter.Language, error) {
 }
 
 func GetLanguage(language string) (*gotreesitter.Language, error) {
-	GrammerCacheMutex.RLock()
-	cached, ok := GrammerCache[language]
-	GrammerCacheMutex.RUnlock()
+	GrammarCacheMutex.RLock()
+	cached, ok := GrammarCache[language]
+	GrammarCacheMutex.RUnlock()
 
 	if ok {
 		return cached, nil
 	}
 
-	GrammerCacheMutex.Lock()
-	defer GrammerCacheMutex.Unlock()
+	GrammarCacheMutex.Lock()
+	defer GrammarCacheMutex.Unlock()
 
 	// Double-check: another goroutine may have loaded it while we waited.
-	if cached, ok := GrammerCache[language]; ok {
+	if cached, ok := GrammarCache[language]; ok {
 		return cached, nil
 	}
 
@@ -87,7 +87,7 @@ func GetLanguage(language string) (*gotreesitter.Language, error) {
 	if lang == nil {
 		return nil, nil
 	}
-	GrammerCache[language] = lang
+	GrammarCache[language] = lang
 	return lang, nil
 }
 
@@ -95,7 +95,7 @@ func GetLanguage(language string) (*gotreesitter.Language, error) {
 // creating function that will handle the empty cache
 
 func ClearCache() {
-	GrammerCacheMutex.Lock()
-	defer GrammerCacheMutex.Unlock()
-	GrammerCache = map[string]*gotreesitter.Language{}
+	GrammarCacheMutex.Lock()
+	defer GrammarCacheMutex.Unlock()
+	GrammarCache = map[string]*gotreesitter.Language{}
 }
