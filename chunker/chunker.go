@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/RITIK-KHARYA/go-code-chunk/context"
 	"github.com/RITIK-KHARYA/go-code-chunk/extract"
 	"github.com/RITIK-KHARYA/go-code-chunk/parser"
 	"github.com/RITIK-KHARYA/go-code-chunk/scope"
@@ -192,17 +193,13 @@ func childrenOf(root types.SyntaxNode) []types.SyntaxNode {
 // buildContext builds the chunk context from the scope tree. It is the Go
 // port of the TS `buildContext`.
 func buildContext(text types.RebuiltText, scopeTree types.ScopeTree, options types.ChunkOptions, filepath *string, language *types.Language) types.ChunkContext {
-	_ = text.ByteRange // TODO: consumed by context lookups once the context package is wired up
-
-	// TODO(context): wire up the context package once it is implemented.
-	//   entities := context.GetEntitiesInRange(br, scopeTree)
-	//   scope    := context.GetScopeForRange(br, scopeTree)
-	//   siblings := context.GetSiblings(br, scopeTree, context.SiblingsOptions{Detail: string(options.SiblingDetail), MaxSiblings: 3})
-	//   imports  := context.GetRelevantImports(entities, scopeTree, options.FilterImports)
-	var entities []types.ChunkEntityInfo
-	var scopeList []types.EntityInfo
-	var siblings []types.SiblingInfo
-	var imports []types.ImportInfo
+	entities := chunkcontext.GetEntitiesInRange(text.ByteRange, scopeTree)
+	scopeList := chunkcontext.GetScopeForRange(text.ByteRange, scopeTree)
+	siblings := chunkcontext.GetSiblings(text.ByteRange, scopeTree, chunkcontext.SiblingOptions{
+		Detail:      string(options.SiblingDetail),
+		MaxSiblings: 3,
+	})
+	imports := chunkcontext.GetRelevantImports(entities, scopeTree, options.FilterImports)
 
 	return types.ChunkContext{
 		Filepath: filepath,
@@ -297,7 +294,7 @@ func processWindows(rootNode types.SyntaxNode, code string, scopeTree types.Scop
 
 		chunk := types.Chunk{
 			Text:               text.Text,
-			ContextualizedText: FormatChunkWithContext(text.Text, context, overlapText),
+			ContextualizedText: chunkcontext.FormatChunkWithContext(text.Text, context, overlapText),
 			ByteRange:          text.ByteRange,
 			LineRange:          text.LineRange,
 			Context:            context,
@@ -501,21 +498,4 @@ func (c *CodeChunker) ChunkBatchStream(files []types.FileInput, opts types.Batch
 	}()
 
 	return results, errCh
-}
-
-// ============================================================================
-// TEMPORARY STUBS
-//
-// The declarations below are placeholders so this package compiles standalone.
-// They mirror the TS sibling modules. DELETE each block once the real
-// implementation is added (each is marked with its target file):
-//
-//	FormatChunkWithContext   -> context/format
-//	buildContext lookups     -> context/*
-// ============================================================================
-
-// TODO(context/format.go): replace with the real FormatChunkWithContext from
-// context/format.
-func FormatChunkWithContext(text string, ctx types.ChunkContext, overlapText string) string {
-	return text
 }
