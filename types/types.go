@@ -63,6 +63,26 @@ type SyntaxNode *gotreesitter.Node
 type SyntaxTree *gotreesitter.Tree
 
 // ============================================================================
+// Chunking Windows
+// ============================================================================
+
+// ASTWindow represents a group of AST nodes assigned to one chunk.
+type ASTWindow struct {
+	Nodes         []SyntaxNode
+	Ancestors     []SyntaxNode
+	Size          int
+	IsPartialNode *bool
+	LineRanges    []LineRange // optional, set only for partial (line-split) nodes
+}
+
+// RebuiltText is the text reconstructed from an ASTWindow.
+type RebuiltText struct {
+	Text      string
+	ByteRange ByteRange
+	LineRange LineRange
+}
+
+// ============================================================================
 // Extracted Entities & Scope
 // ============================================================================
 
@@ -199,8 +219,8 @@ func DefaultChunkOptions() ChunkOptions {
 		MaxChunkSize:  1500,
 		ContextMode:   ContextModeFull,
 		SiblingDetail: SiblingDetailSignatures,
+		OverlapLines:  10,
 		// FilterImports: false
-		// OverlapLines:  0
 		// Language:      ""
 	}
 }
@@ -232,20 +252,6 @@ type FileInput struct {
 	Filepath string
 	Code     string
 	Options  *ChunkOptions // nil = use batch options
-}
-
-// BatchFileResult is a successful result for one file.
-type BatchFileResult struct {
-	Filepath string
-	Chunks   []Chunk
-	Error    error // always nil on success
-}
-
-// BatchFileError is an error result for one file.
-type BatchFileError struct {
-	Filepath string
-	Chunks   []Chunk // always nil
-	Error    error
 }
 
 // BatchResult is the union of success / error for a single file.
@@ -280,13 +286,6 @@ func DefaultBatchOptions() BatchOptions {
 		ChunkOptions: DefaultChunkOptions(),
 		Concurrency:  10,
 	}
-}
-
-// reading comments with same type *string
-//
-//go:fix inline
-func strptr(s string) *string {
-	return new(s)
 }
 
 // Example of how you might create a ParseError
