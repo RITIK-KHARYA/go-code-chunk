@@ -114,6 +114,20 @@ type ScopeTree struct {
 	AllEntities []ExtractedEntity
 }
 
+// ProjectEntity pairs an extracted entity with the file it was extracted from.
+type ProjectEntity struct {
+	Entity   ExtractedEntity
+	Filepath string
+}
+
+// ProjectIndex is a project-wide entity index spanning every file processed
+// together. It is built once per batch/run (see chunker.BuildProjectIndex) and
+// passed down into dependency resolution so a chunk in one file can resolve
+// calls to entities defined in another file of the same project.
+type ProjectIndex struct {
+	ByName map[string][]ProjectEntity // first insertion wins ordering
+}
+
 // ============================================================================
 // Entity / Sibling / Import Info
 // ============================================================================
@@ -125,12 +139,29 @@ type EntityInfo struct {
 	Signature *string // optional
 }
 
-// ChunkEntityInfo extends EntityInfo with extra context for entities inside a chunk.
+// DependencyInfo holds information about a repo-local entity that a chunk
+// calls.
+type DependencyInfo struct {
+	Name      string
+	Type      EntityType
+	Signature string
+	Docstring *string // optional
+	Filepath  string  // file the dependency is actually defined in; "" when unknown
+}
+
+// ChunkEntityInfo extends EntityInfo with extra context for entities inside a
+// chunk. Scope/Dependencies/Imports/Siblings are resolved at THIS entity's own
+// byte range (not the chunk's) and rendered as the entity's own annotation
+// block by FormatChunkWithContext.
 type ChunkEntityInfo struct {
 	EntityInfo
-	Docstring *string    // optional
-	LineRange *LineRange // optional
-	IsPartial bool
+	Docstring    *string    // optional
+	LineRange    *LineRange // optional
+	IsPartial    bool
+	Scope        []EntityInfo     // outer-to-inner at entity.ByteRange.Start
+	Dependencies []DependencyInfo // repo-local calls made inside this entity
+	Imports      []ImportInfo     // imports referenced inside this entity's text
+	Siblings     []SiblingInfo    // neighbors of this entity
 }
 
 // SiblingInfo holds information about a sibling entity.
@@ -156,19 +187,29 @@ type ImportInfo struct {
 	IsNamespace bool
 }
 
+// CapturedVariable holds information about a variable that a closure within
+// the chunk captures from an enclosing scope.
+type CapturedVariable struct {
+	Name       string
+	Type       string // best-effort inferred type; "" when unknown
+	DeclaredAt LineRange
+}
+
 // ============================================================================
 // Chunk Context & Chunk
 // ============================================================================
 
-// ChunkContext holds contextual information for a chunk.
+// ChunkContext holds contextual information for a chunk. Scope,
+// Dependencies, Imports, and Siblings live per-entity (see ChunkEntityInfo):
+// they are resolved and rendered for every entity contained in the chunk, not
+// once per chunk.
 type ChunkContext struct {
-	Filepath   *string // optional
-	Language   *Language
-	Scope      []EntityInfo
-	Entities   []ChunkEntityInfo
-	Siblings   []SiblingInfo
-	Imports    []ImportInfo
-	ParseError *ParseError // optional / recoverable
+	Filepath    *string // optional
+	Language    *Language
+	Entities    []ChunkEntityInfo
+	Captures    []CapturedVariable
+	ParseError  *ParseError // optional / recoverable
+	OverlapText string      // trailing lines of the previous chunk, optional
 }
 
 // Chunk is a chunk of source code with context.

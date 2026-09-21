@@ -5,6 +5,7 @@ package chunker
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -57,45 +58,95 @@ func NewChunkError(message string, cause error) *ChunkError {
 // Window assignment
 // ============================================================================
 
-// greedyAssignWindows accumulates nodes until maxSize is reached, recursing
-// into oversized nodes. It is the Go port of the TS generator
-// `greedyAssignWindows`; instead of yielding it returns all windows.
-func greedyAssignWindows(nodes []types.SyntaxNode, code string, cumsum NwsCumsum, maxSize int) []types.ASTWindow {
+// groupWithLeadingComments groups a flat list of AST children into atomic
+// units: a run of consecutive comment nodes is merged with the next
+// non-comment sibling, so a doc comment can never be separated from the
+// declaration it documents by a window boundary. A trailing run of comments
+// with no following non-comment node forms its own group; non-comment nodes
+// each remain their own group. If lang is nil every child is kept as its own
+// group (flat fallback).
+func groupWithLeadingComments(children []types.SyntaxNode, language types.Language, lang *gotreesitter.Language) [][]types.SyntaxNode {
+	var groups [][]types.SyntaxNode
+	var run []types.SyntaxNode
+	for _, child := range children {
+		if isCommentNode(child, language, lang) {
+			run = append(run, child)
+			continue
+		}
+		if len(run) > 0 {
+			run = append(run, child)
+			groups = append(groups, run)
+			run = nil
+		} else {
+			groups = append(groups, []types.SyntaxNode{child})
+		}
+	}
+	if len(run) > 0 {
+		groups = append(groups, run)
+	}
+	return groups
+}
+
+// isCommentNode reports whether node's tree-sitter type is a comment type for
+// language. Comment type names live in extract.CommentNodeTypes, the same
+// per-language table used to attach docstrings to entities.
+func isCommentNode(node types.SyntaxNode, language types.Language, lang *gotreesitter.Language) bool {
+	if node == nil || lang == nil {
+		return false
+	}
+	return slices.Contains(extract.CommentNodeTypes[language], tsNode(node).Type(lang))
+}
+
+// nwsCountForGroup returns the total NWS count of every member of a group,
+// treating the group as one indivisible unit.
+func nwsCountForGroup(group []types.SyntaxNode, cumsum NwsCumsum) int {
+	size := 0
+	for _, node := range group {
+		size += GetNwsCountForNode(node, cumsum)
+	}
+	return size
+}
+
+// greedyAssignWindows accumulates groups until maxSize is reached, recursing
+// into oversized groups. It is the Go port of the TS generator
+// `greedyAssignWindows`; instead of yielding it returns all windows. Groups
+// come from groupWithLeadingComments, so a comment and the declaration it
+// documents are always assigned to windows as one atomic unit: the whole
+// group is appended together, never partially. An oversized group flushes the
+// current window, then splitOversizedGroup subdivides only its trailing node.
+func greedyAssignWindows(nodes []types.SyntaxNode, code string, cumsum NwsCumsum, maxSize int, language types.Language) []types.ASTWindow {
+	lang, _ := parser.GetLanguage(string(language))
+
 	var windows []types.ASTWindow
 	current := types.ASTWindow{Nodes: []types.SyntaxNode{}, Ancestors: []types.SyntaxNode{}}
 
-	for _, node := range nodes {
-		nodeSize := GetNwsCountForNode(node, cumsum)
+	for _, group := range groupWithLeadingComments(nodes, language, lang) {
+		groupSize := nwsCountForGroup(group, cumsum)
 
-		// Check if node fits in current window
-		if current.Size+nodeSize <= maxSize {
-			current.Nodes = append(current.Nodes, node)
-			current.Size += nodeSize
-		} else if nodeSize > maxSize {
-			// Node is oversized - need to handle specially
+		// Check if group fits in current window
+		if current.Size+groupSize <= maxSize {
+			current.Nodes = append(current.Nodes, group...)
+			current.Size += groupSize
+		} else if groupSize > maxSize {
+			// Group is oversized - need to handle specially. The group is
+			// atomic, so it is subdivided as a whole rather than per node.
 			if len(current.Nodes) > 0 {
 				current.Ancestors = GetAncestors(current.Nodes)
 				windows = append(windows, current)
 				current = types.ASTWindow{Nodes: []types.SyntaxNode{}, Ancestors: []types.SyntaxNode{}}
 			}
 
-			// Try to subdivide the node if it has children
-			if !IsLeafNode(node) {
-				windows = append(windows, greedyAssignWindows(childrenOf(node), code, cumsum, maxSize)...)
-			} else {
-				// Leaf node that's oversized - split at line boundaries
-				windows = append(windows, splitOversizedLeafByLines(node, code, maxSize)...)
-			}
+			windows = append(windows, splitOversizedGroup(group, code, cumsum, maxSize, language)...)
 		} else {
-			// Node doesn't fit but isn't oversized - start new window
+			// Group doesn't fit but isn't oversized - start new window
 			if len(current.Nodes) > 0 {
 				current.Ancestors = GetAncestors(current.Nodes)
 				windows = append(windows, current)
 			}
 			current = types.ASTWindow{
-				Nodes:     []types.SyntaxNode{node},
+				Nodes:     group,
 				Ancestors: []types.SyntaxNode{},
-				Size:      nodeSize,
+				Size:      groupSize,
 			}
 		}
 	}
@@ -106,6 +157,45 @@ func greedyAssignWindows(nodes []types.SyntaxNode, code string, cumsum NwsCumsum
 		windows = append(windows, current)
 	}
 
+	return windows
+}
+
+// splitOversizedGroup subdivides an oversized atomic group while keeping its
+// leading comments glued to the declaration they document. The group always
+// ends with the non-comment node those comments precede; only that node is
+// subdivided (recursing into children, or line-splitting a leaf), and the
+// comments are re-attached to the first result window. A partial (line-split)
+// window rebuilds text from LineRanges alone, so its first line range is
+// expanded upward to cover the comments.
+func splitOversizedGroup(group []types.SyntaxNode, code string, cumsum NwsCumsum, maxSize int, language types.Language) []types.ASTWindow {
+	leading := group[:len(group)-1]
+	top := group[len(group)-1]
+
+	var windows []types.ASTWindow
+	if !IsLeafNode(top) {
+		windows = greedyAssignWindows(childrenOf(top), code, cumsum, maxSize, language)
+	} else {
+		windows = splitOversizedLeafByLines(top, code, maxSize)
+	}
+	if len(windows) == 0 {
+		return nil
+	}
+
+	first := windows[0]
+	window := types.ASTWindow{
+		Nodes:         append(append([]types.SyntaxNode{}, leading...), first.Nodes...),
+		Ancestors:     first.Ancestors,
+		Size:          first.Size + nwsCountForGroup(leading, cumsum),
+		IsPartialNode: first.IsPartialNode,
+		LineRanges:    first.LineRanges,
+	}
+	if len(leading) > 0 && isPartialWindow(window) && len(window.LineRanges) > 0 {
+		startLine := int(tsNode(leading[0]).StartPoint().Row)
+		if startLine < window.LineRanges[0].Start {
+			window.LineRanges[0].Start = startLine
+		}
+	}
+	windows[0] = window
 	return windows
 }
 
@@ -190,35 +280,124 @@ func childrenOf(root types.SyntaxNode) []types.SyntaxNode {
 // Context
 // ============================================================================
 
-// buildContext builds the chunk context from the scope tree. It is the Go
-// port of the TS `buildContext`.
-func buildContext(text types.RebuiltText, scopeTree types.ScopeTree, options types.ChunkOptions, filepath *string, language *types.Language) types.ChunkContext {
-	entities := chunkcontext.GetEntitiesInRange(text.ByteRange, scopeTree)
-	scopeList := chunkcontext.GetScopeForRange(text.ByteRange, scopeTree)
-	siblings := chunkcontext.GetSiblings(text.ByteRange, scopeTree, chunkcontext.SiblingOptions{
-		Detail:      string(options.SiblingDetail),
-		MaxSiblings: 3,
-	})
-	imports := chunkcontext.GetRelevantImports(entities, scopeTree, options.FilterImports)
+// buildContext builds the chunk context from the scope tree. Progress, named
+// entities are resolved and annotated per-entity: every entity fully contained
+// in the chunk gets its OWN Scope/Dependencies/Imports/Siblings computed at
+// that entity's byte range (see enrichEntity). The result is a pure data
+// struct rendered by chunkcontext.FormatChunkWithContext.
+func buildContext(text types.RebuiltText, nodes []types.SyntaxNode, code string, scopeTree types.ScopeTree, options types.ChunkOptions, filepath *string, language *types.Language, project *types.ProjectIndex) types.ChunkContext {
+	captures := chunkcontext.ResolveCaptures(text.ByteRange, scopeTree, code, *language)
+
+	raw := entitiesContainedIn(text.ByteRange, scopeTree)
+	entities := make([]types.ChunkEntityInfo, 0, len(raw))
+	for _, e := range raw {
+		entities = append(entities, enrichEntity(e, nodes, code, scopeTree, options, filepath, *language, project))
+	}
 
 	return types.ChunkContext{
 		Filepath: filepath,
 		Language: language,
-		Scope:    scopeList,
 		Entities: entities,
-		Siblings: siblings,
-		Imports:  imports,
+		Captures: captures,
 	}
 }
 
-// emptyContext returns the context used when contextMode is "none".
-func emptyContext() types.ChunkContext {
-	return types.ChunkContext{
-		Scope:    []types.EntityInfo{},
-		Entities: []types.ChunkEntityInfo{},
-		Siblings: []types.SiblingInfo{},
-		Imports:  []types.ImportInfo{},
+// enrichEntity computes the per-entity annotation data for one entity: its
+// scope breadcrumb at the entity's own starting byte offset (NOT the chunk's),
+// the repo-local calls made inside its body, the imports its own text uses,
+// and its siblings. This is what fixes the old once-per-chunk lookup bug.
+func enrichEntity(e types.ExtractedEntity, nodes []types.SyntaxNode, code string, scopeTree types.ScopeTree, options types.ChunkOptions, filepath *string, language types.Language, project *types.ProjectIndex) types.ChunkEntityInfo {
+	info := chunkEntityInfoFor(e)
+
+	info.Scope = scopeBreadcrumb(e.ByteRange.Start, scopeTree)
+	info.Dependencies = ResolveDependencies(nodes, e.ByteRange, code, project, filepathOrEmpty(filepath), language, e.Name)
+	info.Imports = chunkcontext.GetImportsUsedInText(entityText(code, e.ByteRange), scopeTree.Imports)
+	info.Siblings = chunkcontext.GetSiblings(e.ByteRange, scopeTree,
+		chunkcontext.SiblingOptions{Detail: string(options.SiblingDetail)})
+
+	return info
+}
+
+// entityText returns the entity's own source slice, clamped to the file.
+func entityText(code string, br types.ByteRange) string {
+	start := min(br.Start, len(code))
+	end := min(br.End, len(code))
+	if start > end {
+		start = end
 	}
+	return code[start:end]
+}
+
+// filepathOrEmpty returns the filepath string, or "" when absent.
+func filepathOrEmpty(filepath *string) string {
+	if filepath == nil {
+		return ""
+	}
+	return *filepath
+}
+
+// scopeBreadcrumb returns the breadcrumb of entities enclosing offset, ordered
+// outer to inner: the outermost ancestor first and the innermost scope last.
+// It is derived from the scope tree, never fabricated.
+func scopeBreadcrumb(offset int, scopeTree types.ScopeTree) []types.EntityInfo {
+	node := scope.FindScopeAtOffset(scopeTree, offset)
+	if node == nil {
+		return []types.EntityInfo{}
+	}
+
+	// GetAncestorChain walks Parent pointers from the node upward, returning
+	// the immediate parent first and the root last. Prepending the innermost
+	// node yields an inner-first chain; reverse it into outer-first order.
+	chain := []types.EntityInfo{entityInfoFor(node.Entity)}
+	for _, ancestor := range scope.GetAncestorChain(node) {
+		chain = append(chain, entityInfoFor(ancestor.Entity))
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain
+}
+
+// entitiesContainedIn returns every code entity in the scope tree whose byte
+// range is fully contained within chunkRange. Import and export marker
+// entities are excluded: they are not code entities and do not get per-entity
+// annotation blocks.
+func entitiesContainedIn(chunkRange types.ByteRange, scopeTree types.ScopeTree) []types.ExtractedEntity {
+	var result []types.ExtractedEntity
+	for _, entity := range scopeTree.AllEntities {
+		if entity.Type == types.EntityTypeImport || entity.Type == types.EntityTypeExport {
+			continue
+		}
+		if scope.RangeContains(chunkRange, entity.ByteRange) {
+			result = append(result, entity)
+		}
+	}
+	return result
+}
+
+// entityInfoFor converts an extracted entity into basic context info.
+func entityInfoFor(entity types.ExtractedEntity) types.EntityInfo {
+	info := types.EntityInfo{Name: entity.Name, Type: entity.Type}
+	if entity.Signature != "" {
+		sig := entity.Signature
+		info.Signature = &sig
+	}
+	return info
+}
+
+// chunkEntityInfoFor converts an extracted entity into chunk-info form. A
+// fully contained entity is never partial.
+func chunkEntityInfoFor(entity types.ExtractedEntity) types.ChunkEntityInfo {
+	info := types.ChunkEntityInfo{
+		EntityInfo: entityInfoFor(entity),
+		IsPartial:  false,
+	}
+	if entity.Docstring != nil {
+		info.Docstring = entity.Docstring
+	}
+	lineRange := entity.LineRange
+	info.LineRange = &lineRange
+	return info
 }
 
 // resolveOptions merges the caller options with defaults, mirroring the TS
@@ -263,12 +442,12 @@ func computeOverlapText(prevText string, overlapLines int) string {
 // cumsum, greedily assigns nodes to windows, merges adjacent windows, then
 // rebuilds each window into a chunk and yields it, in order, to yield.
 // streaming=true reports TotalChunks as -1 (unknown) like the TS generator.
-func processWindows(rootNode types.SyntaxNode, code string, scopeTree types.ScopeTree, language types.Language, options types.ChunkOptions, filepath *string, streaming bool, yield func(types.Chunk) error) error {
+func processWindows(rootNode types.SyntaxNode, code string, scopeTree types.ScopeTree, language types.Language, options types.ChunkOptions, filepath *string, project *types.ProjectIndex, streaming bool, yield func(types.Chunk) error) error {
 	opts := resolveOptions(options, language)
 
 	cumsum := PreprocessNwsCumsum(code)
 	children := childrenOf(rootNode)
-	rawWindows := greedyAssignWindows(children, code, cumsum, opts.MaxChunkSize)
+	rawWindows := greedyAssignWindows(children, code, cumsum, opts.MaxChunkSize, language)
 	mergedWindows := MergeAdjacentWindows(rawWindows, MergeOptions{MaxSize: opts.MaxChunkSize})
 
 	totalChunks := len(mergedWindows)
@@ -282,25 +461,25 @@ func processWindows(rootNode types.SyntaxNode, code string, scopeTree types.Scop
 
 		var context types.ChunkContext
 		if opts.ContextMode == types.ContextModeNone {
-			context = emptyContext()
+			// "none" keeps only the always-present file/language header.
+			context = types.ChunkContext{Filepath: filepath, Language: &language}
 		} else {
-			context = buildContext(text, scopeTree, opts, filepath, &language)
+			context = buildContext(text, w.Nodes, code, scopeTree, opts, filepath, &language, project)
 		}
 
-		var overlapText string
 		if opts.OverlapLines > 0 && prevText != "" {
-			overlapText = computeOverlapText(prevText, opts.OverlapLines)
+			context.OverlapText = computeOverlapText(prevText, opts.OverlapLines)
 		}
 
 		chunk := types.Chunk{
-			Text:               text.Text,
-			ContextualizedText: chunkcontext.FormatChunkWithContext(text.Text, context, overlapText),
-			ByteRange:          text.ByteRange,
-			LineRange:          text.LineRange,
-			Context:            context,
-			Index:              i,
-			TotalChunks:        totalChunks,
+			Text:        text.Text,
+			ByteRange:   text.ByteRange,
+			LineRange:   text.LineRange,
+			Context:     context,
+			Index:       i,
+			TotalChunks: totalChunks,
 		}
+		chunk.ContextualizedText = chunkcontext.FormatChunkWithContext(chunk, chunk.Context)
 		if err := yield(chunk); err != nil {
 			return err
 		}
@@ -310,10 +489,19 @@ func processWindows(rootNode types.SyntaxNode, code string, scopeTree types.Scop
 }
 
 // ChunkCode chunks source code into pieces with context. It is the Go port of
-// the TS `chunk` function and takes pre-parsed input.
+// the TS `chunk` function and takes pre-parsed input. Dependency resolution
+// uses a single-file project index (this file only); use ChunkCodeWithProject
+// to resolve calls against the whole project.
 func ChunkCode(rootNode types.SyntaxNode, code string, scopeTree types.ScopeTree, language types.Language, options types.ChunkOptions, filepath *string) ([]types.Chunk, error) {
+	return ChunkCodeWithProject(rootNode, code, scopeTree, language, options, filepath, singleFileIndex(scopeTree, filepathOrEmpty(filepath)))
+}
+
+// ChunkCodeWithProject is ChunkCode with an explicit project-wide entity index
+// for cross-file dependency resolution. project may be shared across files and
+// must be built once per batch (see BuildProjectIndex).
+func ChunkCodeWithProject(rootNode types.SyntaxNode, code string, scopeTree types.ScopeTree, language types.Language, options types.ChunkOptions, filepath *string, project *types.ProjectIndex) ([]types.Chunk, error) {
 	var chunks []types.Chunk
-	err := processWindows(rootNode, code, scopeTree, language, options, filepath, false, func(chunk types.Chunk) error {
+	err := processWindows(rootNode, code, scopeTree, language, options, filepath, project, false, func(chunk types.Chunk) error {
 		chunks = append(chunks, chunk)
 		return nil
 	})
@@ -327,7 +515,7 @@ func StreamChunks(rootNode types.SyntaxNode, code string, scopeTree types.ScopeT
 	chunks := make(chan types.Chunk)
 	go func() {
 		defer close(chunks)
-		_ = processWindows(rootNode, code, scopeTree, language, options, filepath, true, func(chunk types.Chunk) error {
+		_ = processWindows(rootNode, code, scopeTree, language, options, filepath, singleFileIndex(scopeTree, filepathOrEmpty(filepath)), true, func(chunk types.Chunk) error {
 			chunks <- chunk
 			return nil
 		})
@@ -401,7 +589,7 @@ func (c *CodeChunker) Stream(filepath, source string, opts types.ChunkOptions) (
 			errCh <- NewChunkError("Failed to chunk code", err)
 			return
 		}
-		if err := processWindows(rootNode, source, scopeTree, language, opts, &filepath, true, func(chunk types.Chunk) error {
+		if err := processWindows(rootNode, source, scopeTree, language, opts, &filepath, singleFileIndex(scopeTree, filepath), true, func(chunk types.Chunk) error {
 			chunks <- chunk
 			return nil
 		}); err != nil {
@@ -412,11 +600,28 @@ func (c *CodeChunker) Stream(filepath, source string, opts types.ChunkOptions) (
 	return chunks, errCh
 }
 
-// ChunkBatch chunks multiple files with limited concurrency.
+// chunkWithProject parses a single file and chunks it against a shared
+// project-wide entity index.
+func (c *CodeChunker) chunkWithProject(filepath, source string, opts types.ChunkOptions, project *types.ProjectIndex) ([]types.Chunk, error) {
+	rootNode, scopeTree, language, err := parseSource(filepath, source, opts)
+	if err != nil {
+		return nil, NewChunkError("Failed to chunk code", err)
+	}
+	return ChunkCodeWithProject(rootNode, source, scopeTree, language, opts, &filepath, project)
+}
+
+// ChunkBatch chunks multiple files with limited concurrency. The project-wide
+// entity index covering every file is built ONCE here and shared by all
+// workers, so a call in one file can resolve an entity defined in another.
 func (c *CodeChunker) ChunkBatch(files []types.FileInput, opts types.BatchOptions) ([]types.BatchResult, error) {
 	concurrency := opts.Concurrency
 	if concurrency <= 0 {
 		concurrency = 10
+	}
+
+	project, err := BuildProjectIndex(files, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	results := make([]types.BatchResult, len(files))
@@ -437,7 +642,7 @@ func (c *CodeChunker) ChunkBatch(files []types.FileInput, opts types.BatchOption
 				fileOpts = *f.Options
 			}
 
-			chunks, err := c.Chunk(f.Filepath, f.Code, fileOpts)
+			chunks, err := c.chunkWithProject(f.Filepath, f.Code, fileOpts, project)
 			results[i] = types.BatchResult{Filepath: f.Filepath, Chunks: chunks, Error: err}
 
 			if opts.OnProgress != nil {
@@ -463,6 +668,14 @@ func (c *CodeChunker) ChunkBatchStream(files []types.FileInput, opts types.Batch
 		concurrency = 10
 	}
 
+	project, err := BuildProjectIndex(files, opts)
+	if err != nil {
+		errCh <- err
+		close(results)
+		close(errCh)
+		return results, errCh
+	}
+
 	go func() {
 		defer close(results)
 		defer close(errCh)
@@ -484,7 +697,7 @@ func (c *CodeChunker) ChunkBatchStream(files []types.FileInput, opts types.Batch
 					fileOpts = *f.Options
 				}
 
-				chunks, err := c.Chunk(f.Filepath, f.Code, fileOpts)
+				chunks, err := c.chunkWithProject(f.Filepath, f.Code, fileOpts, project)
 				results <- types.BatchResult{Filepath: f.Filepath, Chunks: chunks, Error: err}
 
 				if opts.OnProgress != nil {

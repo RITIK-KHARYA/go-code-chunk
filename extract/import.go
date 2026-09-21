@@ -303,16 +303,22 @@ func extractPythonImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Lang
 	switch node.Type(lang) {
 	case "import_statement":
 		for _, child := range node.Children() {
-			if txt, ok := dottedNameText(child, lang, code); ok {
-				entities = append(entities, importSymbolEntity(child, txt, txt))
+			if bound, ok := pythonBoundSymbol(child, lang, code); ok {
+				source := bound
+				if child.Type(lang) == "aliased_import" {
+					if dn := firstNamedChildOfType(child, lang, "dotted_name"); dn != nil {
+						source = dn.Text([]byte(code))
+					}
+				}
+				entities = append(entities, importSymbolEntity(child, bound, source))
 			}
 		}
 
 	case "import_from_statement":
 		module, body := pythonFromImportModule(node, lang, code)
 		for _, child := range body {
-			if txt, ok := dottedNameText(child, lang, code); ok {
-				entities = append(entities, importSymbolEntity(child, txt, module))
+			if bound, ok := pythonBoundSymbol(child, lang, code); ok {
+				entities = append(entities, importSymbolEntity(child, bound, module))
 				continue
 			}
 			if child.Type(lang) == "wildcard_import" {
@@ -322,6 +328,39 @@ func extractPythonImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Lang
 	}
 
 	return entities
+}
+
+// pythonBoundSymbol returns the identifier an import symbol binds in code. An
+// aliased_import ("import numpy as np" / "from os.path import join as j")
+// binds its alias (the identifier after "as"), because that is the name source
+// code actually uses; a plain dotted_name binds its own text.
+func pythonBoundSymbol(n *gotreesitter.Node, lang *gotreesitter.Language, code string) (string, bool) {
+	switch n.Type(lang) {
+	case "aliased_import":
+		bound := ""
+		for _, child := range n.Children() {
+			if child.IsNamed() && child.Type(lang) == "identifier" {
+				bound = child.Text([]byte(code))
+				break
+			}
+		}
+		if bound == "" {
+			if dn := firstNamedChildOfType(n, lang, "dotted_name"); dn != nil {
+				bound = dn.Text([]byte(code))
+			}
+		}
+		if bound == "" {
+			return "", false
+		}
+		return bound, true
+	case "dotted_name":
+		txt := n.Text([]byte(code))
+		if txt == "" {
+			return "", false
+		}
+		return txt, true
+	}
+	return "", false
 }
 
 func extractRustImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Language, code string) []types.ExtractedEntity {
@@ -405,8 +444,13 @@ func extractJSImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Language
 				if spec.Type(lang) != "import_specifier" {
 					continue
 				}
+				// The bound identifier is the alias when present
+				// ("import { format as fmt }" binds "fmt"), otherwise the
+				// imported name itself ("import { helper }" binds "helper").
 				name := ""
-				if nameField := spec.ChildByFieldName("name", lang); nameField != nil {
+				if aliasField := spec.ChildByFieldName("alias", lang); aliasField != nil {
+					name = aliasField.Text([]byte(code))
+				} else if nameField := spec.ChildByFieldName("name", lang); nameField != nil {
 					name = nameField.Text([]byte(code))
 				} else {
 					name = spec.Text([]byte(code))

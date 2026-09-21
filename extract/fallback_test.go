@@ -177,11 +177,13 @@ from os import path, sep
 from os.path import join as j
 `
 
+	// Aliased imports bind the alias ("as X"), since that is the identifier
+	// source code subsequently uses; plain dotted names bind themselves.
 	want := []entityView{
-		{typ: types.EntityTypeImport, name: "numpy", sign: "numpy", source: new("numpy")},
+		{typ: types.EntityTypeImport, name: "np", sign: "np", source: new("numpy")},
 		{typ: types.EntityTypeImport, name: "path", sign: "path", source: new("os")},
 		{typ: types.EntityTypeImport, name: "sep", sign: "sep", source: new("os")},
-		{typ: types.EntityTypeImport, name: "join", sign: "join", source: new("os.path")},
+		{typ: types.EntityTypeImport, name: "j", sign: "j", source: new("os.path")},
 	}
 
 	got := collectViews(t, "python", src)
@@ -210,6 +212,7 @@ func TestExtractEntitiesByNodeTypesTSImportSymbols(t *testing.T) {
 	src := `import 'polyfill';
 import d, { a, b } from 'x';
 import * as ns from 'y';
+import { format as fmt } from 'z';
 `
 	want := []entityView{
 		{typ: types.EntityTypeImport, name: "polyfill", sign: "polyfill", source: new("polyfill")},
@@ -217,6 +220,8 @@ import * as ns from 'y';
 		{typ: types.EntityTypeImport, name: "a", sign: "a", source: new("x")},
 		{typ: types.EntityTypeImport, name: "b", sign: "b", source: new("x")},
 		{typ: types.EntityTypeImport, name: "ns", sign: "ns", source: new("y")},
+		// Aliased named imports bind the alias, the identifier code uses.
+		{typ: types.EntityTypeImport, name: "fmt", sign: "fmt", source: new("z")},
 	}
 
 	got := collectViews(t, "typescript", src)

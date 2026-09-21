@@ -54,6 +54,17 @@ var EntityNodeTypes = map[types.Language][]string{
 	},
 }
 
+// CallNodeTypes are the AST node types representing function/method calls per
+// language. Each name has been verified against a real parse of that grammar.
+var CallNodeTypes = map[types.Language][]string{
+	types.LanguageTypeScript: {"call_expression"},
+	types.LanguageJavaScript: {"call_expression"},
+	types.LanguagePython:     {"call"},
+	types.LanguageRust:       {"call_expression"},
+	types.LanguageGo:         {"call_expression"},
+	types.LanguageJava:       {"method_invocation"},
+}
+
 // NodeTypeToEntityType maps an AST node type to its entity type.
 var NodeTypeToEntityType = map[string]types.EntityType{
 	// Functions

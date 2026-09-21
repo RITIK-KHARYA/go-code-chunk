@@ -126,6 +126,122 @@ func TestGetEntitiesInRange(t *testing.T) {
 	}
 }
 
+func TestGetImportsUsedInText(t *testing.T) {
+	_, tree := buildTestTree(t)
+
+	both := GetImportsUsedInText("var s = fmt.Sprintf(\"%d\", strings.TrimSpace(\" x \"))", tree.Imports)
+	if len(both) != 2 || both[0].Name != "fmt" || both[1].Name != "strings" {
+		t.Fatalf("both imports = %+v, want [fmt strings] (file order)", both)
+	}
+
+	fmtOnly := GetImportsUsedInText("x := fmt.Sprint(1)", tree.Imports)
+	if len(fmtOnly) != 1 || fmtOnly[0].Name != "fmt" || fmtOnly[0].Source != "fmt" {
+		t.Fatalf("fmt-only imports = %+v, want [fmt]", fmtOnly)
+	}
+
+	stringsOnly := GetImportsUsedInText("s := strings.TrimSpace(parts[0])", tree.Imports)
+	if len(stringsOnly) != 1 || stringsOnly[0].Name != "strings" {
+		t.Fatalf("strings-only imports = %+v, want [strings]", stringsOnly)
+	}
+
+	// Bare whole-word references match: that is exactly how JS/TS named imports
+	// and Python from-imports are used (foo(), never foo.something).
+	got := GetImportsUsedInText("s := StringConcatPlus2(a, b, fmt, strings)", tree.Imports)
+	if len(got) != 2 || got[0].Name != "fmt" || got[1].Name != "strings" {
+		t.Fatalf("bare references = %+v, want [fmt strings] (file order)", got)
+	}
+
+	if got := GetImportsUsedInText("", tree.Imports); len(got) != 0 {
+		t.Fatalf("empty text = %+v, want empty", got)
+	}
+	if got := GetImportsUsedInText("fmt.Sprint(1)", nil); len(got) != 0 {
+		t.Fatalf("nil imports = %+v, want empty", got)
+	}
+
+	t.Run("unaliased multi-segment path", func(t *testing.T) {
+		imports := []types.ExtractedEntity{{Type: types.EntityTypeImport, Name: "path/filepath", Source: new("path/filepath")}}
+		got := GetImportsUsedInText("dir := filepath.Join(a, b)", imports)
+		if len(got) != 1 || got[0].Name != "filepath" || got[0].Source != "path/filepath" {
+			t.Fatalf("filepath usage = %+v, want [filepath (path/filepath)]", got)
+		}
+		if got := GetImportsUsedInText("n := os.Getenv(\"HOME\")", imports); len(got) != 0 {
+			t.Fatalf("unrelated usage = %+v, want empty", got)
+		}
+	})
+
+	t.Run("aliased import", func(t *testing.T) {
+		imports := []types.ExtractedEntity{{Type: types.EntityTypeImport, Name: "jsonf", Source: new("encoding/json")}}
+		got := GetImportsUsedInText("b, _ := jsonf.Marshal(v)", imports)
+		if len(got) != 1 || got[0].Name != "jsonf" || got[0].Source != "encoding/json" {
+			t.Fatalf("aliased usage = %+v, want [jsonf]", got)
+		}
+	})
+
+	t.Run("prefix collision", func(t *testing.T) {
+		imports := []types.ExtractedEntity{{Type: types.EntityTypeImport, Name: "fmt"}}
+		// "xfmt.Error" must not match the fmt import.
+		if got := GetImportsUsedInText("xfmt.Error = 1", imports); len(got) != 0 {
+			t.Fatalf("prefix collision = %+v, want empty", got)
+		}
+	})
+
+	// TS/JS named imports bind bare identifiers; the code calls them without a
+	// qualifier. The old qualifier-substring heuristic could never match these.
+	t.Run("ts bare named imports", func(t *testing.T) {
+		imports := []types.ExtractedEntity{
+			{Type: types.EntityTypeImport, Name: "dflt", Source: new("./default")},
+			{Type: types.EntityTypeImport, Name: "helper", Source: new("./utils")},
+			{Type: types.EntityTypeImport, Name: "fmt", Source: new("./utils")},
+			{Type: types.EntityTypeImport, Name: "utils", Source: new("./utils")},
+		}
+		text := `function run() {
+  const a = helper(1)
+  const b = fmt(a)
+  const c = utils.helper(2)
+  const d = dflt()
+  return a + b + c + d
+}`
+		got := GetImportsUsedInText(text, imports)
+		if len(got) != 4 || got[0].Name != "dflt" || got[1].Name != "helper" || got[2].Name != "fmt" || got[3].Name != "utils" {
+			t.Fatalf("ts bare imports = %+v, want [dflt helper fmt utils]", got)
+		}
+		if got := GetImportsUsedInText("function run() { return noHelper() }", imports); len(got) != 0 {
+			t.Fatalf("ts unused = %+v, want empty", got)
+		}
+	})
+
+	// Python mixes both styles in one file: from-imports bind bare names
+	// ("from m import foo" -> foo()) and module imports bind a qualifier
+	// ("import os" -> os.getenv). One bound-identifier rule must cover both.
+	t.Run("python from and qualified imports", func(t *testing.T) {
+		imports := []types.ExtractedEntity{
+			{Type: types.EntityTypeImport, Name: "h", Source: new("utils")},
+			{Type: types.EntityTypeImport, Name: "scale", Source: new("utils")},
+			{Type: types.EntityTypeImport, Name: "os", Source: new("os")},
+			{Type: types.EntityTypeImport, Name: "os.path", Source: new("os.path")},
+		}
+		text := `def run():
+    a = h(1)
+    b = scale(a)
+    c = os.getenv("HOME")
+    return os.path.join(a, b, c)
+`
+		got := GetImportsUsedInText(text, imports)
+		if len(got) != 4 || got[0].Name != "h" || got[1].Name != "scale" || got[2].Name != "os" || got[3].Name != "os.path" {
+			t.Fatalf("python imports = %+v, want [h scale os os.path]", got)
+		}
+	})
+
+	// Whole-word matching must not let a shorter bound name match inside a
+	// longer identifier.
+	t.Run("no substring match inside longer identifier", func(t *testing.T) {
+		imports := []types.ExtractedEntity{{Type: types.EntityTypeImport, Name: "helper", Source: new("./utils")}}
+		if got := GetImportsUsedInText("superhelper(fmt(item))", imports); len(got) != 0 {
+			t.Fatalf("substring inside longer identifier = %+v, want empty", got)
+		}
+	})
+}
+
 func TestGetRelevantImports(t *testing.T) {
 	_, tree := buildTestTree(t)
 
@@ -219,53 +335,59 @@ func ent(t types.EntityType, name string, start, end int) types.ExtractedEntity 
 	}
 }
 
+//go:fix inline
+func strPtr(s string) *string { return new(s) }
+
 func TestFormatChunkWithContext(t *testing.T) {
 	fp := "src/app/components/Widget.tsx"
 	sigClass := "export class Widget extends Component"
 	sigRender := "render()"
-	sigReact := "import React from 'react'"
+
+	chunk := types.Chunk{
+		Text:      "export default widget",
+		LineRange: types.LineRange{Start: 0, End: 0},
+	}
 	ctx := types.ChunkContext{
 		Filepath: &fp,
 		Language: &langTS,
-		Scope: []types.EntityInfo{
-			{Name: "Widget", Type: types.EntityTypeClass, Signature: &sigClass},
-			{Name: "Component", Type: types.EntityTypeClass},
-		},
 		Entities: []types.ChunkEntityInfo{
-			{EntityInfo: types.EntityInfo{Name: "Widget", Type: types.EntityTypeClass, Signature: &sigClass}},
-			{EntityInfo: types.EntityInfo{Name: "render", Type: types.EntityTypeMethod, Signature: &sigRender}},
-			{EntityInfo: types.EntityInfo{Name: "React", Type: types.EntityTypeImport, Signature: &sigReact}},
+			{
+				EntityInfo: types.EntityInfo{Name: "render", Type: types.EntityTypeMethod, Signature: &sigRender},
+				LineRange:  &types.LineRange{Start: 0, End: 0},
+				Scope: []types.EntityInfo{
+					{Name: "Widget", Type: types.EntityTypeClass, Signature: &sigClass},
+					{Name: "render", Type: types.EntityTypeMethod, Signature: &sigRender},
+				},
+				Dependencies: []types.DependencyInfo{
+					{Name: "render", Type: types.EntityTypeMethod, Signature: sigRender},
+				},
+			},
 		},
-		Siblings: []types.SiblingInfo{
-			{Name: "setup", Type: types.EntityTypeFunction, Position: types.SiblingPositionBefore, Distance: 1},
-			{Name: "teardown", Type: types.EntityTypeFunction, Position: types.SiblingPositionAfter, Distance: 1},
-		},
-		Imports: []types.ImportInfo{
-			{Name: "react", Source: "react"},
-			{Name: "mobx", Source: "mobx"},
-		},
+		OverlapText: "overlap from prev",
 	}
 
-	got := FormatChunkWithContext("export default widget", ctx, "overlap from prev")
+	got := FormatChunkWithContext(chunk, ctx)
 	want := strings.Join([]string{
-		"# app/components/Widget.tsx",
-		"# Scope: Component > Widget",
-		"# Defines: export class Widget extends Component, render()",
-		"# Uses: react, mobx",
-		"# After: setup",
-		"# Before: teardown",
+		"// File: src/app/components/Widget.tsx",
+		"// Language: typescript",
 		"",
-		"# ...",
+		"// ...",
 		"overlap from prev",
-		"# ---",
+		"// ---",
+		"// Scope: Widget > render",
+		"// Dependencies: render(...)",
 		"export default widget",
 	}, "\n")
 	if got != want {
-		t.Fatalf("FormattedChunkWithContext:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+		t.Fatalf("FormatChunkWithContext:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 
-	if got := FormatChunkWithContext("code", types.ChunkContext{}, ""); got != "code" {
-		t.Fatalf("empty context = %q, want %q", got, "code")
+	// The file/language header must be present even when no other context
+	// resolved, and no annotation line may use "# " syntax.
+	gotEmpty := FormatChunkWithContext(types.Chunk{Text: "code"}, types.ChunkContext{})
+	wantEmpty := "// File: \n// Language: \n\ncode"
+	if gotEmpty != wantEmpty {
+		t.Fatalf("empty context = %q, want %q", gotEmpty, wantEmpty)
 	}
 }
 

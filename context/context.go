@@ -5,6 +5,7 @@ package chunkcontext
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/RITIK-KHARYA/go-code-chunk/scope"
 	"github.com/RITIK-KHARYA/go-code-chunk/types"
@@ -94,6 +95,44 @@ func GetRelevantImports(entities []types.ChunkEntityInfo, scopeTree types.ScopeT
 		if _, ok := usedNames[importEntity.Name]; ok {
 			result = append(result, mapToImportInfo(importEntity))
 		}
+	}
+	return result
+}
+
+// GetImportsUsedInText returns only the imports referenced in text, in
+// import-declaration order. Matching is bound-identifier and language-agnostic:
+// an import counts as used when any identifier it binds appears as a WHOLE WORD
+// in text (never a bare substring, so "fmt" cannot match inside "xfmt"). Each
+// import entity's Name is already the binding its source records (see
+// ExtractImportSymbols), which makes one rule cover every access style without
+// per-language branching:
+//
+//   - qualified access: Go import "pkg" -> pkg.Foo, Python import os -> os.getenv
+//   - bare-name access: JS/TS import { foo } -> foo(), Python from m import foo
+//   - aliases: JS/TS import { x as y } -> y(), Python import a.b as c -> c()
+//
+// For unaliased multi-segment module paths (Go "github.com/x/y") the binding is
+// the last path segment.
+func GetImportsUsedInText(text string, imports []types.ExtractedEntity) []types.ImportInfo {
+	if text == "" || len(imports) == 0 {
+		return []types.ImportInfo{}
+	}
+
+	result := make([]types.ImportInfo, 0, len(imports))
+	for _, entity := range imports {
+		bound := entity.Name
+		if bound == "" || bound == "*" {
+			continue
+		}
+		// Unaliased multi-segment module paths bind their last path segment.
+		if i := strings.LastIndex(bound, "/"); i >= 0 {
+			bound = bound[i+1:]
+		}
+		usedRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(bound) + `\b`)
+		if !usedRe.MatchString(text) {
+			continue
+		}
+		result = append(result, types.ImportInfo{Name: bound, Source: getImportSource(entity)})
 	}
 	return result
 }
