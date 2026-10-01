@@ -112,8 +112,10 @@ func nwsCountForGroup(group []types.SyntaxNode, cumsum NwsCumsum) int {
 // `greedyAssignWindows`; instead of yielding it returns all windows. Groups
 // come from groupWithLeadingComments, so a comment and the declaration it
 // documents are always assigned to windows as one atomic unit: the whole
-// group is appended together, never partially. An oversized group flushes the
-// current window, then splitOversizedGroup subdivides only its trailing node.
+// group is appended together, never partially. An oversized group flushes
+// the current window, then splitOversizedGroup subdivides it — line-splitting
+// any oversized leading comment as well as the trailing declaration — so no
+// splittable comment block is left intact in one chunk.
 func greedyAssignWindows(nodes []types.SyntaxNode, code string, cumsum NwsCumsum, maxSize int, language types.Language) []types.ASTWindow {
 	lang, _ := parser.GetLanguage(string(language))
 
@@ -161,41 +163,194 @@ func greedyAssignWindows(nodes []types.SyntaxNode, code string, cumsum NwsCumsum
 }
 
 // splitOversizedGroup subdivides an oversized atomic group while keeping its
-// leading comments glued to the declaration they document. The group always
-// ends with the non-comment node those comments precede; only that node is
-// subdivided (recursing into children, or line-splitting a leaf), and the
-// comments are re-attached to the first result window. A partial (line-split)
-// window rebuilds text from LineRanges alone, so its first line range is
-// expanded upward to cover the comments.
+// leading comments glued to the declaration they document, when they fit, and
+// line-splitting any oversized leading comment block at line boundaries
+// instead of reattaching it wholesale.
+//
+// The group is `[comment..., top]` where top is the non-comment node those
+// comments precede, or a trailing comment run folded into a single group.
+// Both `top` and any oversized leading leaf are split:
+//
+//   - top is subdivided by recursing into its children (non-leaf) or by
+//     line-splitting (leaf), exactly as before.
+//   - any leading leaf whose OWN NWS already exceeds maxSize is also
+//     line-split via splitOversizedLeafByLines, instead of being glued
+//     wholesale onto top's first sub-window (which used to leave the whole
+//     oversized comment in a single chunk).
+//
+// Small leading comments stay glued to the next sub-window when they fit,
+// mirroring the original "expand upward" behavior for partial windows:
+//
+//   - a small run BEFORE an oversized leading leaf is absorbed into that
+//     leaf's first split window (its first line range is expanded upward),
+//   - a small run AFTER the last oversized leading leaf is glued to top's
+//     first sub-window, and that combined window is then absorbed into the
+//     last oversized leading split when they fit together (the line range is
+//     extended downward to cover the declaration).
+//
+// If a small run cannot fit alongside the next sub-window it is emitted as
+// its own window(s) so no chunk exceeds maxSize. The chunker only leaves a
+// single unsplittable line oversized (see splitOversizedLeafByLines).
 func splitOversizedGroup(group []types.SyntaxNode, code string, cumsum NwsCumsum, maxSize int, language types.Language) []types.ASTWindow {
 	leading := group[:len(group)-1]
 	top := group[len(group)-1]
 
-	var windows []types.ASTWindow
+	// Split `top` (the trailing declaration or trailing comment run) into
+	// sub-windows, exactly as before.
+	var topWindows []types.ASTWindow
 	if !IsLeafNode(top) {
-		windows = greedyAssignWindows(childrenOf(top), code, cumsum, maxSize, language)
+		topWindows = greedyAssignWindows(childrenOf(top), code, cumsum, maxSize, language)
 	} else {
-		windows = splitOversizedLeafByLines(top, code, maxSize)
-	}
-	if len(windows) == 0 {
-		return nil
+		topWindows = splitOversizedLeafByLines(top, code, maxSize)
 	}
 
-	first := windows[0]
-	window := types.ASTWindow{
-		Nodes:         append(append([]types.SyntaxNode{}, leading...), first.Nodes...),
-		Ancestors:     first.Ancestors,
-		Size:          first.Size + nwsCountForGroup(leading, cumsum),
-		IsPartialNode: first.IsPartialNode,
-		LineRanges:    first.LineRanges,
-	}
-	if len(leading) > 0 && isPartialWindow(window) && len(window.LineRanges) > 0 {
-		startLine := int(tsNode(leading[0]).StartPoint().Row)
-		if startLine < window.LineRanges[0].Start {
-			window.LineRanges[0].Start = startLine
+	// Walk leading left to right. Oversized leaves are line-split on the
+	// spot; the run of small comments preceding each oversized leaf is
+	// absorbed into that leaf's first split window (when it fits). The
+	// small-comment run that survives the walk (the one after the last
+	// oversized leading leaf, or all of leading when none is oversized) is
+	// later glued to top's first sub-window.
+	var prefix []types.ASTWindow
+	var glue []types.SyntaxNode
+	anyOversizedLeading := false
+	for _, node := range leading {
+		if IsLeafNode(node) && GetNwsCountForNode(node, cumsum) > maxSize {
+			split := splitOversizedLeafByLines(node, code, maxSize)
+			if len(split) > 0 && len(glue) > 0 {
+				glueNws := nwsCountForGroup(glue, cumsum)
+				if split[0].Size+glueNws <= maxSize {
+					split[0] = prependLeadingComments(split[0], glue, glueNws)
+				} else {
+					prefix = append(prefix, emitSmallLeafRun(glue, cumsum, maxSize)...)
+				}
+			}
+			prefix = append(prefix, split...)
+			glue = nil
+			anyOversizedLeading = true
+		} else {
+			glue = append(glue, node)
 		}
 	}
-	windows[0] = window
+
+	// Glue the surviving small run to top's first sub-window (when it fits),
+	// and then absorb that combined window into the last oversized leading
+	// split when they fit together, keeping the declaration attached to the
+	// last comment chunk (the "expand downward" mirror of the existing
+	// "expand upward" logic).
+	if len(topWindows) > 0 {
+		if len(glue) > 0 {
+			glueNws := nwsCountForGroup(glue, cumsum)
+			if topWindows[0].Size+glueNws <= maxSize {
+				topWindows[0] = prependLeadingComments(topWindows[0], glue, glueNws)
+			} else {
+				prefix = append(prefix, emitSmallLeafRun(glue, cumsum, maxSize)...)
+			}
+		}
+		if anyOversizedLeading && len(prefix) > 0 {
+			last := prefix[len(prefix)-1]
+			firstTop := topWindows[0]
+			// Only absorb a normal (non-partial) sub-window: extending a
+			// partial split's line range over another partial sub-window
+			// would discard the latter's own per-line ranges.
+			if isPartialWindow(last) && len(last.LineRanges) > 0 &&
+				last.Size+firstTop.Size <= maxSize && !isPartialWindow(firstTop) {
+				prefix[len(prefix)-1] = absorbIntoLastSplit(last, firstTop)
+				topWindows = topWindows[1:]
+			}
+		}
+	} else if len(glue) > 0 {
+		// top contributed nothing; emit the surviving small run on its own.
+		prefix = append(prefix, emitSmallLeafRun(glue, cumsum, maxSize)...)
+	}
+
+	return append(prefix, topWindows...)
+}
+
+// prependLeadingComments returns a copy of w with the small-comment run glue
+// prepended to w.Nodes and glueNws added to w.Size, mirroring the original
+// "expand upward" behavior: when w is a partial window with LineRanges, its
+// first line range is extended upward to cover glue[0]. LineRanges is copied
+// before mutation so the caller's slice is not aliased.
+func prependLeadingComments(w types.ASTWindow, glue []types.SyntaxNode, glueNws int) types.ASTWindow {
+	out := types.ASTWindow{
+		Nodes:         append(append([]types.SyntaxNode{}, glue...), w.Nodes...),
+		Ancestors:     w.Ancestors,
+		Size:          w.Size + glueNws,
+		IsPartialNode: w.IsPartialNode,
+		LineRanges:    w.LineRanges,
+	}
+	if len(glue) > 0 && isPartialWindow(out) && len(out.LineRanges) > 0 {
+		startLine := int(tsNode(glue[0]).StartPoint().Row)
+		if startLine < out.LineRanges[0].Start {
+			ranges := make([]types.LineRange, len(out.LineRanges))
+			copy(ranges, out.LineRanges)
+			ranges[0].Start = startLine
+			out.LineRanges = ranges
+		}
+	}
+	return out
+}
+
+// absorbIntoLastSplit folds swallowed (a normal sub-window of top) into last
+// (the last line-split window of an oversized leading leaf) by extending
+// last's last line range downward to cover swallowed's end line and merging
+// their nodes/ancestors. last must be a partial window with LineRanges and
+// swallowed must be a normal window. The resulting Size is the sum, which is
+// accurate because any gap between last's last line and swallowed's last line
+// is a blank separator (0 NWS): top immediately follows the comment run.
+func absorbIntoLastSplit(last, swallowed types.ASTWindow) types.ASTWindow {
+	nodes := append(append([]types.SyntaxNode{}, last.Nodes...), swallowed.Nodes...)
+	lineRanges := last.LineRanges
+	if len(swallowed.Nodes) > 0 && len(lineRanges) > 0 {
+		endLine := int(tsNode(swallowed.Nodes[len(swallowed.Nodes)-1]).EndPoint().Row)
+		if endLine > lineRanges[len(lineRanges)-1].End {
+			ranges := make([]types.LineRange, len(lineRanges))
+			copy(ranges, lineRanges)
+			ranges[len(ranges)-1].End = endLine
+			lineRanges = ranges
+		}
+	}
+	return types.ASTWindow{
+		Nodes:         nodes,
+		Ancestors:     GetAncestors(nodes),
+		Size:          last.Size + swallowed.Size,
+		IsPartialNode: last.IsPartialNode,
+		LineRanges:    lineRanges,
+	}
+}
+
+// emitSmallLeafRun packs a run of small leaf nodes (each with NWS ≤ maxSize)
+// into one or more normal windows of at most maxSize NWS each, greedily
+// accumulated. It is used when a small-comment run cannot fit alongside the
+// next sub-window and so must be emitted on its own. Callers guarantee every
+// node is a small leaf (oversized leaves are split separately by the caller;
+// non-leaf oversized nodes do not occur in `leading`, which is a comment
+// run).
+func emitSmallLeafRun(nodes []types.SyntaxNode, cumsum NwsCumsum, maxSize int) []types.ASTWindow {
+	var windows []types.ASTWindow
+	var current []types.SyntaxNode
+	currentSize := 0
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		windows = append(windows, types.ASTWindow{
+			Nodes:     append([]types.SyntaxNode{}, current...),
+			Ancestors: GetAncestors(current),
+			Size:      currentSize,
+		})
+		current = nil
+		currentSize = 0
+	}
+	for _, node := range nodes {
+		nws := GetNwsCountForNode(node, cumsum)
+		if currentSize+nws > maxSize && len(current) > 0 {
+			flush()
+		}
+		current = append(current, node)
+		currentSize += nws
+	}
+	flush()
 	return windows
 }
 
