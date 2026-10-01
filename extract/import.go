@@ -36,6 +36,15 @@ func extractRustUsePath(node *gotreesitter.Node, lang *gotreesitter.Language, co
 	case "use_list", "use_wildcard":
 		// If it's a use_list, the parent path holds the actual source
 		return ""
+	case "use_as_clause":
+		// Aliased use ('path::X as Y' / 'X as Y'): the path is the first
+		// named child (identifier or scoped_identifier); the alias is the
+		// last named child. ExtractImportSource wants the path, not the
+		// full 'X as Y' text.
+		if _, path, ok := rustUseAsClauseParts(node, lang, code); ok {
+			return path
+		}
+		return node.Text([]byte(code))
 	case "scoped_use_list":
 		// path::{...} -> the scoped_identifier child is the path part
 		for _, child := range node.Children() {
@@ -363,6 +372,23 @@ func pythonBoundSymbol(n *gotreesitter.Node, lang *gotreesitter.Language, code s
 	return "", false
 }
 
+// rustUseAsClauseParts splits a Rust use_as_clause node into its (alias, path)
+// components. The path is the first named child (identifier or
+// scoped_identifier); the alias is the last named child (the identifier after
+// 'as'). Aliased imports bind the alias, since that is the identifier source
+// code uses — the cross-language contract documented in context/context.go.
+// ok is false when the node has no named children, letting callers fall back to
+// the raw node text.
+func rustUseAsClauseParts(n *gotreesitter.Node, lang *gotreesitter.Language, code string) (alias, path string, ok bool) {
+	named := namedChildren(n)
+	if len(named) == 0 {
+		return "", "", false
+	}
+	alias = named[len(named)-1].Text([]byte(code))
+	path = named[0].Text([]byte(code))
+	return alias, path, true
+}
+
 func extractRustImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Language, code string) []types.ExtractedEntity {
 	arg := node.ChildByFieldName("argument", lang)
 	if arg == nil {
@@ -391,7 +417,16 @@ func extractRustImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Langua
 			if !item.IsNamed() {
 				continue
 			}
-			entities = append(entities, importSymbolEntity(item, item.Text([]byte(code)), path))
+			// Aliased list items ('{X as Y}') bind the alias Y, the
+			// identifier source code uses; the Source stays the outer
+			// scoped path (see the cross-language alias contract).
+			name := item.Text([]byte(code))
+			if item.Type(lang) == "use_as_clause" {
+				if alias, _, ok := rustUseAsClauseParts(item, lang, code); ok {
+					name = alias
+				}
+			}
+			entities = append(entities, importSymbolEntity(item, name, path))
 		}
 		if len(entities) == 0 {
 			txt := arg.Text([]byte(code))
@@ -405,7 +440,15 @@ func extractRustImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Langua
 			if !item.IsNamed() {
 				continue
 			}
-			entities = append(entities, importSymbolEntity(item, item.Text([]byte(code)), ""))
+			// A bare 'use {X as Y}' has no enclosing path, so the Source
+			// is "" (as for non-aliased items); Name still binds the alias.
+			name := item.Text([]byte(code))
+			if item.Type(lang) == "use_as_clause" {
+				if alias, _, ok := rustUseAsClauseParts(item, lang, code); ok {
+					name = alias
+				}
+			}
+			entities = append(entities, importSymbolEntity(item, name, ""))
 		}
 		if len(entities) == 0 {
 			txt := arg.Text([]byte(code))
@@ -414,6 +457,17 @@ func extractRustImportSymbols(node *gotreesitter.Node, lang *gotreesitter.Langua
 		return entities
 
 	default:
+		// Top-level aliased use ('use path::X as Y;'): Name binds the
+		// alias Y and Source is the path ('path::X').
+		if arg.Type(lang) == "use_as_clause" {
+			if alias, path, ok := rustUseAsClauseParts(arg, lang, code); ok {
+				src := path
+				if src == "" {
+					src = alias
+				}
+				return []types.ExtractedEntity{importSymbolEntity(arg, alias, src)}
+			}
+		}
 		txt := arg.Text([]byte(code))
 		return []types.ExtractedEntity{importSymbolEntity(arg, txt, txt)}
 	}

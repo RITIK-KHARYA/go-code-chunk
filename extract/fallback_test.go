@@ -208,6 +208,32 @@ use std::io;
 	}
 }
 
+func TestExtractEntitiesByNodeTypesRustAliasedImportSymbols(t *testing.T) {
+	src := `use std::collections::{HashMap as Map, HashSet};
+use std::io::Write as W;
+use std::collections::{foo::Bar as Baz};
+use foo as bar;
+use {HashSet as HS};
+`
+	// Aliased imports bind the alias ("as X"), the identifier source code
+	// uses, mirroring the Go/Python/TS alias contract. The Source stays the
+	// module path: the outer scoped path for braced items, the path child
+	// for top-level aliases, and "" for a bare (path-less) use list.
+	want := []entityView{
+		{typ: types.EntityTypeImport, name: "Map", sign: "Map", source: new("std::collections")},
+		{typ: types.EntityTypeImport, name: "HashSet", sign: "HashSet", source: new("std::collections")},
+		{typ: types.EntityTypeImport, name: "W", sign: "W", source: new("std::io::Write")},
+		{typ: types.EntityTypeImport, name: "Baz", sign: "Baz", source: new("std::collections")},
+		{typ: types.EntityTypeImport, name: "bar", sign: "bar", source: new("foo")},
+		{typ: types.EntityTypeImport, name: "HS", sign: "HS", source: new("")},
+	}
+
+	got := collectViews(t, "rust", src)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entities = %+v, want %+v", got, want)
+	}
+}
+
 func TestExtractEntitiesByNodeTypesTSImportSymbols(t *testing.T) {
 	src := `import 'polyfill';
 import d, { a, b } from 'x';
