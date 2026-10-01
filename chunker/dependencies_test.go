@@ -164,3 +164,101 @@ func TestChunkDependenciesResolved(t *testing.T) {
 		t.Errorf("helper entity deps = %+v, want none", helperEnt.Dependencies)
 	}
 }
+
+// goTypeConvSrc defines a named Go type (MyInt) and a function that converts to
+// it via MyInt(x), which parses as a call_expression whose function child is a
+// type_identifier. Before the ExtractName fix, MyInt was indexed under
+// ByName["<anonymous>"], so the conversion edge was silently dropped.
+const goTypeConvSrc = `package main
+
+type MyInt int
+
+func asInt(x int) MyInt {
+	return MyInt(x)
+}
+`
+
+// TestChunkTypeConversionDependencyResolved asserts that a Go type-conversion
+// call (T(x)) resolves to the named type T as a dependency: the type entity
+// must carry its real name in the scope tree and ByName index, and the calling
+// function's chunk must list the type as a dependency.
+func TestChunkTypeConversionDependencyResolved(t *testing.T) {
+	opts := types.ChunkOptions{Language: types.LanguageGo, MaxChunkSize: 2000}
+	rootNode, scopeTree, language, err := parseSource("conv.go", goTypeConvSrc, opts)
+	if err != nil {
+		t.Fatalf("parseSource: %v", err)
+	}
+	chunks, err := ChunkCode(rootNode, goTypeConvSrc, scopeTree, language, opts, nil)
+	if err != nil {
+		t.Fatalf("ChunkCode: %v", err)
+	}
+
+	// The type entity must be extractable by name (regression: was "<anonymous>").
+	myInt := findEntityName(t, scopeTree, "MyInt")
+	if myInt.Type != types.EntityTypeType {
+		t.Fatalf("MyInt entity type = %s, want %s", myInt.Type, types.EntityTypeType)
+	}
+	asInt := findEntityName(t, scopeTree, "asInt")
+
+	var asIntChunk types.Chunk
+	found := false
+	for _, ch := range chunks {
+		if scope.RangeContains(ch.ByteRange, asInt.ByteRange) {
+			asIntChunk = ch
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no chunk fully covers asInt")
+	}
+
+	asIntEnt := entityInfoInChunk(t, asIntChunk, asInt.Name)
+	myIntDep, ok := depHas(asIntEnt.Dependencies, myInt.Name)
+	if !ok {
+		t.Fatalf("asInt deps = %+v, want dependency on %q (type conversion)", asIntEnt.Dependencies, myInt.Name)
+	}
+	if myIntDep.Type != types.EntityTypeType {
+		t.Errorf("MyInt dep type = %s, want %s", myIntDep.Type, types.EntityTypeType)
+	}
+}
+
+// TestBuildProjectIndexGoTypeByName asserts the project-wide ByName index keys
+// single-spec Go types under their real name (not "<anonymous>"), so the
+// dependency resolver and other name-based consumers can look them up. A
+// grouped declaration still collapses under "<anonymous>" — the documented
+// single-spec gate behavior.
+func TestBuildProjectIndexGoTypeByName(t *testing.T) {
+	files := []types.FileInput{
+		{Filepath: "single.go", Code: "package main\ntype MyInt int\n"},
+		{Filepath: "grouped.go", Code: "package main\ntype (\n\tA int\n\tB string\n)\n"},
+	}
+	index, err := BuildProjectIndex(files, types.BatchOptions{
+		ChunkOptions: types.ChunkOptions{Language: types.LanguageGo, MaxChunkSize: 2000},
+	})
+	if err != nil {
+		t.Fatalf("BuildProjectIndex: %v", err)
+	}
+
+	myIntGroup, ok := index.ByName["MyInt"]
+	if !ok || len(myIntGroup) != 1 {
+		t.Fatalf("ByName[MyInt] = %+v, want exactly 1 entry (was collapsed under <anonymous> before fix)", myIntGroup)
+	}
+	if myIntGroup[0].Entity.Name != "MyInt" {
+		t.Errorf("ByName[MyInt][0].Name = %q, want %q", myIntGroup[0].Entity.Name, "MyInt")
+	}
+	if myIntGroup[0].Entity.Type != types.EntityTypeType {
+		t.Errorf("ByName[MyInt][0].Type = %s, want %s", myIntGroup[0].Entity.Type, types.EntityTypeType)
+	}
+	if myIntGroup[0].Filepath != "single.go" {
+		t.Errorf("ByName[MyInt][0].Filepath = %q, want %q", myIntGroup[0].Filepath, "single.go")
+	}
+
+	// Grouped declaration stays unnamed: one entity under "<anonymous>".
+	grouped, hasGrouped := index.ByName["<anonymous>"]
+	if !hasGrouped || len(grouped) != 1 {
+		t.Fatalf("ByName[<anonymous>] = %+v, want exactly 1 grouped entry (grouped declarations stay unnamed)", grouped)
+	}
+	if grouped[0].Filepath != "grouped.go" {
+		t.Errorf("ByName[<anonymous>][0].Filepath = %q, want %q", grouped[0].Filepath, "grouped.go")
+	}
+}

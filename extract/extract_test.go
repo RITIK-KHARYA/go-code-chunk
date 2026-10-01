@@ -51,6 +51,27 @@ func TestExtractName(t *testing.T) {
 			pattern: "(function_declaration) @f",
 			want:    "greet",
 		},
+		{
+			name:    "go type declaration struct",
+			lang:    "go",
+			src:     "package main\n\ntype Person struct {\n\tName string\n}\n",
+			pattern: "(type_declaration) @t",
+			want:    "Person",
+		},
+		{
+			name:    "go type declaration interface",
+			lang:    "go",
+			src:     "package main\n\ntype Reader interface {\n\tRead(p []byte) (n int, err error)\n}\n",
+			pattern: "(type_declaration) @t",
+			want:    "Reader",
+		},
+		{
+			name:    "go type alias",
+			lang:    "go",
+			src:     "package main\n\ntype MyInt int\n",
+			pattern: "(type_declaration) @t",
+			want:    "MyInt",
+		},
 	}
 
 	for _, tc := range cases {
@@ -74,6 +95,22 @@ func TestExtractNameNotFound(t *testing.T) {
 
 	if got, ok := ExtractName(node, types.LanguageGo, src); ok {
 		t.Fatalf("ExtractName(block) = %q, true; want found=false", got)
+	}
+}
+
+// TestExtractNameGoGroupedTypeDeclaration asserts that a grouped Go type
+// declaration (`type ( A int; B string )`) is NOT named by ExtractName: the
+// fallback emits a single entity for the whole group, so naming it after the
+// first spec would silently mislabel it. The name must therefore be absent
+// (ok=false) so the caller substitutes "<anonymous>".
+func TestExtractNameGoGroupedTypeDeclaration(t *testing.T) {
+	src := "package main\n\ntype (\n\tA int\n\tB string\n)\n"
+	tree, node := firstCaptured(t, "go", src, "(type_declaration) @t")
+	defer tree.Release()
+
+	got, ok := ExtractName(node, types.LanguageGo, src)
+	if ok {
+		t.Fatalf("ExtractName(grouped type_declaration) = %q, true; want false (grouped declarations stay unnamed)", got)
 	}
 }
 
