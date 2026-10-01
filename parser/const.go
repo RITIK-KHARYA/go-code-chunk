@@ -2,6 +2,7 @@ package parser
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/odvcencio/gotreesitter"
@@ -39,7 +40,7 @@ var extensions = map[string]string{
 }
 
 func DetectLanguage(filePath string) string {
-	return extensions[filepath.Ext(filePath)]
+	return extensions[strings.ToLower(filepath.Ext(filePath))]
 }
 
 // GetLanguage returns the native tree-sitter grammar for a language name.

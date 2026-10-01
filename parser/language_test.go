@@ -62,6 +62,35 @@ func TestDetectLanguage(t *testing.T) {
 	}
 }
 
+// TestDetectLanguageCaseInsensitive ensures the extension lookup is
+// case-insensitive, matching the CLI's admission filter (cmd/main.go lowercases
+// the extension before checking sourceExts) and the all-lowercase map keys.
+// Every supported language must be recognized regardless of extension case.
+func TestDetectLanguageCaseInsensitive(t *testing.T) {
+	cases := map[string]string{
+		// Mixed-case and all-uppercase extensions must resolve to their language.
+		"Component.Jsx": "javascript",
+		"Main.Go":       "go",
+		"App.Tsx":       "typescript",
+		"INDEX.JS":      "javascript",
+		"Main.JAVA":     "java",
+		"COMPONENT.JSX": "javascript",
+		// Directories and dotfiles: only the extension is folded.
+		"src/utils.Jsx": "javascript",
+		"a/b/c/App.Tsx": "typescript",
+		".Ts":           "typescript",
+		// Multi-dotted extension is folded as a whole, not just the last pair.
+		"types.PYI": "python",
+		// Unsupported extension with mixed case still returns "".
+		"thing.XYZ": "",
+	}
+	for path, want := range cases {
+		if got := DetectLanguage(path); got != want {
+			t.Errorf("DetectLanguage(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestGetLanguageSupported(t *testing.T) {
 	for _, lang := range []string{"typescript", "javascript", "python", "rust", "go", "java"} {
 		l, err := GetLanguage(lang)
