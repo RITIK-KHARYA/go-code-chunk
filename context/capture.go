@@ -238,6 +238,12 @@ func (c *captureCollector) process(n *gotreesitter.Node, stack []*gotreesitter.N
 		}
 		scopes := make([]*gotreesitter.Node, len(stack))
 		copy(scopes, stack)
+		// stack grows outer→inner on descent; the scope chain contract is
+		// innermost first (see captureRef.scopes), so reverse before storing
+		// so bind checks the nearest declaring scope before any enclosing one.
+		for i, j := 0, len(scopes)-1; i < j; i, j = i+1, j-1 {
+			scopes[i], scopes[j] = scopes[j], scopes[i]
+		}
 		c.refs = append(c.refs, captureRef{name: name, start: n.StartByte(), scopes: scopes})
 	}
 }

@@ -1,6 +1,7 @@
 package chunkcontext
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/odvcencio/gotreesitter"
@@ -145,6 +146,53 @@ func f() {
 	}
 }
 
+// TestCaptureShadowingIsolated asserts that a closure which re-declares a
+// variable in its own body (a Go shadow) and only references that inner local
+// captures nothing. This is the shadowing case isolated from the dedup that
+// `TestCaptureShadowing` exercises jointly, so that a regression in scope
+// ordering (bind must check the closure's own scope before enclosing scopes)
+// cannot be masked by the shared seenName dedup.
+func TestCaptureShadowingIsolated(t *testing.T) {
+	src := `package p
+
+func f() {
+	x := 1
+	g := func() {
+		x := 2
+		_ = x
+	}
+	_ = g
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 0) // a shadowing closure captures nothing
+}
+
+// TestCaptureShadowingNested asserts a closure nested inside another closure
+// that shadows a name in its own (innermost) body captures nothing for that
+// name, because the reference resolves to the innermost closure's own local.
+// This exercises a three-level scope chain (inner block -> outer closure block
+// -> enclosing function) and confirms bind checks the nearest scope first at
+// each nesting depth.
+func TestCaptureShadowingNested(t *testing.T) {
+	src := `package p
+
+func f() {
+	x := 1
+	outer := func() {
+		inner := func() {
+			x := 2
+			_ = x
+		}
+		_ = inner
+	}
+	_ = outer
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 0)
+}
+
 // TestCaptureNestedClosure asserts a closure nested inside another closure
 // captures locals of its enclosing closure.
 func TestCaptureNestedClosure(t *testing.T) {
@@ -282,5 +330,65 @@ func TestUnsupportedLanguageReturnsNil(t *testing.T) {
 	captures := ResolveCaptures(types.ByteRange{Start: 0, End: len(src)}, tree, src, types.LanguageTypeScript)
 	if len(captures) != 0 {
 		t.Errorf("unexpected captures for typescript: %v", captures)
+	}
+}
+
+// formatWithContext renders a chunk with the given captures via the public
+// formatter, exercising the end-to-end `// Captures:` rendering path.
+func formatWithContext(t *testing.T, captures []types.CapturedVariable) string {
+	t.Helper()
+	lang := types.LanguageGo
+	chunk := types.Chunk{Text: "package p\n", LineRange: types.LineRange{Start: 0, End: 0}}
+	ctx := types.ChunkContext{Language: &lang, Captures: captures}
+	return FormatChunkWithContext(chunk, ctx)
+}
+
+// TestFormatCapturesRendering asserts the rendered `// Captures:` line mirrors
+// the corrected capture set: a shadowing closure (no captures) produces no
+// `// Captures:` line at all, while a genuine capture renders exactly
+// `// Captures: x(int)`. This covers the user-visible path end-to-end
+// (ResolveCaptures -> ChunkContext.Captures -> FormatChunkWithContext).
+func TestFormatCapturesRendering(t *testing.T) {
+	shadowSrc := `package p
+
+func f() {
+	x := 1
+	g := func() {
+		x := 2
+		_ = x
+	}
+	_ = g
+}
+`
+	genuineSrc := `package p
+
+func f() {
+	x := 1
+	g := func() {
+		_ = x
+	}
+	_ = g
+}
+`
+	// Shadowing closure captures nothing -> no `// Captures:` line.
+	shadowCaps := resolveCapturesFor(t, shadowSrc, 0, len(shadowSrc))
+	capturesLen(t, shadowCaps, 0)
+	if out := formatWithContext(t, shadowCaps); strings.Contains(out, "// Captures:") {
+		t.Errorf("shadowing closure rendered a `// Captures:` line; want none:\n%s", out)
+	}
+
+	// Genuine capture -> exactly `// Captures: x(int)`, DeclaredAt at outer decl.
+	genuineCaps := resolveCapturesFor(t, genuineSrc, 0, len(genuineSrc))
+	capturesLen(t, genuineCaps, 1)
+	cv := findCapture(t, genuineCaps, "x")
+	if cv.Type != "int" {
+		t.Errorf("x type = %q, want %q", cv.Type, "int")
+	}
+	if cv.DeclaredAt.Start != 3 {
+		t.Errorf("x DeclaredAt = %+v, want row 3 (outer declaration)", cv.DeclaredAt)
+	}
+	out := formatWithContext(t, genuineCaps)
+	if !strings.Contains(out, "// Captures: x(int)") {
+		t.Errorf("genuine capture not rendered as `// Captures: x(int)`:\n%s", out)
 	}
 }
