@@ -228,6 +228,24 @@ func (c *captureCollector) process(n *gotreesitter.Node, stack []*gotreesitter.N
 			}
 			c.addDecl(name, t, scope)
 		}
+	case "range_clause":
+		// for i := range xs / for k, v := range m: the loop variables are
+		// bound by the range_clause (not a short_var_declaration), so they
+		// must be recorded here for closures to bind them. Types are left
+		// unknown ("") rather than inferred from the container, since a
+		// single rangee maps to multiple positions (index/element or
+		// key/value) and per-RHS inference would tag every loop variable
+		// with the container type.
+		left := n.ChildByFieldName("left", c.lang)
+		if left == nil {
+			return
+		}
+		for child := 0; child < left.ChildCount(); child++ {
+			ident := left.Child(child)
+			if ident.Type(c.lang) == "identifier" {
+				c.addDecl(ident, "", scope)
+			}
+		}
 	case "identifier":
 		if c.isDeclName(n) {
 			return
@@ -266,8 +284,8 @@ func (c *captureCollector) addDecl(name *gotreesitter.Node, typ string, scope *g
 }
 
 // isDeclName reports whether the identifier is the name position of a
-// declaration construct (parameter, var spec, or short-var left side) rather
-// than a reference.
+// declaration construct (parameter, var spec, short-var left side, or range
+// left side) rather than a reference.
 func (c *captureCollector) isDeclName(n *gotreesitter.Node) bool {
 	p := n.Parent()
 	if p == nil {
@@ -283,7 +301,14 @@ func (c *captureCollector) isDeclName(n *gotreesitter.Node) bool {
 		return false
 	case "expression_list":
 		gp := p.Parent()
-		return gp != nil && gp.Type(c.lang) == "short_var_declaration" && gp.ChildByFieldName("left", c.lang) == p
+		if gp == nil {
+			return false
+		}
+		switch gp.Type(c.lang) {
+		case "short_var_declaration", "range_clause":
+			return gp.ChildByFieldName("left", c.lang) == p
+		}
+		return false
 	}
 	return false
 }
