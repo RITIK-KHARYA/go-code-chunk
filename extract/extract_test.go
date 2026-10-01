@@ -258,8 +258,75 @@ func TestFindBodyDelimiterPos(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := findBodyDelimiterPos(tc.text, tc.delimiter); got != tc.want {
+			if got := findBodyDelimiterPos(tc.text, tc.delimiter, types.LanguageGo); got != tc.want {
 				t.Fatalf("findBodyDelimiterPos(%q, %q) = %d, want %d", tc.text, tc.delimiter, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFindBodyDelimiterPosLanguage verifies the language-conditional handling
+// of the single quote: in Rust, ' is a lifetime and must not be treated as a
+// string delimiter; in JS/TS (and Go), ' is still tracked as a string
+// delimiter so a '{' inside a single-quoted string is skipped.
+func TestFindBodyDelimiterPosLanguage(t *testing.T) {
+	cases := []struct {
+		name, text, delimiter string
+		language              types.Language
+		want                  int
+	}{
+		// Rust: ' is a lifetime, so the body '{' is found even when a single
+		// lifetime's closing ' sits after the '{' (the pre-fix bug returned -1).
+		{"rust single lifetime", "Foo<'a>{", "{", types.LanguageRust, 7},
+		{"rust two lifetimes", "Foo<'a, 'b>{", "{", types.LanguageRust, 11},
+		{"rust generic no lifetime", "Foo<T>{", "{", types.LanguageRust, 6},
+		{"rust fn lifetime text-mode", "f<'a>(x){", "{", types.LanguageRust, 8},
+		// JS/TS: ' is a string delimiter, so a '{' inside a '...' string is
+		// skipped and the real body '{' after it is found.
+		{"js single-quote masks brace", "f('a{b'){", "{", types.LanguageJavaScript, 8},
+		{"ts single-quote masks brace", "f('a{b'){", "{", types.LanguageTypeScript, 8},
+		// Go: ' is tracked (rune/string literals), but no quoting interferes here.
+		{"go paren delimiter", "func f(a, b int) int {", "{", types.LanguageGo, 21},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := findBodyDelimiterPos(tc.text, tc.delimiter, tc.language); got != tc.want {
+				t.Fatalf("findBodyDelimiterPos(%q, %q, %s) = %d, want %d", tc.text, tc.delimiter, tc.language, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRustLifetimeSignatures verifies the end-to-end signature extraction for
+// Rust declarations containing lifetimes in their header.
+func TestRustLifetimeSignatures(t *testing.T) {
+	cases := []struct {
+		name, src, pattern string
+		et                 types.EntityType
+		want               string
+	}{
+		{"struct single lifetime", "struct Foo<'a> { x: &'a i32 }\n",
+			"(struct_item) @s", types.EntityTypeType, "struct Foo<'a>"},
+		{"enum single lifetime", "enum Foo<'a> { A(&'a i32) }\n",
+			"(enum_item) @s", types.EntityTypeEnum, "enum Foo<'a>"},
+		{"struct two lifetimes", "struct Foo<'a, 'b> { x: &'a i32 }\n",
+			"(struct_item) @s", types.EntityTypeType, "struct Foo<'a, 'b>"},
+		{"struct no lifetime", "struct Foo<T> { x: T }\n",
+			"(struct_item) @s", types.EntityTypeType, "struct Foo<T>"},
+		{"struct multi-line single lifetime", "struct Foo<'a> {\n    x: &'a i32,\n}\n",
+			"(struct_item) @s", types.EntityTypeType, "struct Foo<'a>"},
+		{"enum multi-line single lifetime", "enum Color<'a> {\n    Red(&'a str),\n    Green,\n}\n",
+			"(enum_item) @s", types.EntityTypeEnum, "enum Color<'a>"},
+		{"type alias no brace", "type Foo = u32;\n",
+			"(type_item) @t", types.EntityTypeType, "type Foo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tree, node := firstCaptured(t, "rust", tc.src, tc.pattern)
+			defer tree.Release()
+			got := ExtractSignature(node, tc.et, types.LanguageRust, tc.src)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

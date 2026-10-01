@@ -34,10 +34,17 @@ func GetBodyDelimiter(language types.Language) string {
 
 // findBodyDelimiterPos finds the position of the body delimiter in text,
 // skipping delimiters inside nested brackets/parens/generics and strings.
-func findBodyDelimiterPos(text string, delimiter string) int {
+//
+// In Rust a single quote denotes a lifetime (e.g. struct Foo<'a>), not a
+// string literal. Treating it as a string delimiter masks the body '{' when a
+// single lifetime precedes the body, so single-quote tracking is skipped for
+// Rust.
+func findBodyDelimiterPos(text string, delimiter string, language types.Language) int {
 	if delimiter == "" {
 		return -1
 	}
+
+	trackSingleQuote := language != types.LanguageRust
 
 	parenDepth := 0
 	bracketDepth := 0
@@ -53,7 +60,16 @@ func findBodyDelimiterPos(text string, delimiter string) int {
 		}
 
 		// Track string literals to avoid matching inside them
-		if (char == '"' || char == '\'' || char == '`') && prevChar != '\\' {
+		if (char == '"' || char == '`') && prevChar != '\\' {
+			if !inString {
+				inString = true
+				stringChar = char
+			} else if char == stringChar {
+				inString = false
+			}
+			continue
+		}
+		if trackSingleQuote && char == '\'' && prevChar != '\\' {
 			if !inString {
 				inString = true
 				stringChar = char
@@ -151,7 +167,7 @@ func extractFunctionSignature(node *gotreesitter.Node, language types.Language, 
 
 	nodeText := code[node.StartByte():node.EndByte()]
 	delimiter := BODY_DELIMITERS[language]
-	delimPos := findBodyDelimiterPos(nodeText, delimiter)
+	delimPos := findBodyDelimiterPos(nodeText, delimiter, language)
 
 	if delimPos == -1 {
 		// No body delimiter found - might be a declaration without a body
@@ -169,7 +185,7 @@ func extractClassSignature(node *gotreesitter.Node, language types.Language, cod
 
 	nodeText := code[node.StartByte():node.EndByte()]
 	delimiter := BODY_DELIMITERS[language]
-	delimPos := findBodyDelimiterPos(nodeText, delimiter)
+	delimPos := findBodyDelimiterPos(nodeText, delimiter, language)
 
 	if delimPos == -1 {
 		// No body - return first line or full text
@@ -189,10 +205,10 @@ func extractTypeSignature(node *gotreesitter.Node, language types.Language, code
 	nodeText := code[node.StartByte():node.EndByte()]
 
 	equalsPos := strings.IndexByte(nodeText, '=')
-	bracePos := findBodyDelimiterPos(nodeText, "{")
+	bracePos := findBodyDelimiterPos(nodeText, "{", language)
 	colonPos := -1
 	if language == types.LanguagePython {
-		colonPos = findBodyDelimiterPos(nodeText, ":")
+		colonPos = findBodyDelimiterPos(nodeText, ":", language)
 	}
 
 	// Find the earliest delimiter
