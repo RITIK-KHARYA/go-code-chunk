@@ -38,6 +38,32 @@ func collectViews(t *testing.T, language, src string) []entityView {
 	return views
 }
 
+// collectViewsAndEntities is collectViews that also returns the raw
+// extracted entity slice, so tests can additionally assert on ByteRange /
+// LineRange (used by chunks for dependency-resolution chunk-enclosure
+// checks).
+func collectViewsAndEntities(t *testing.T, language, src string) ([]entityView, []types.ExtractedEntity) {
+	t.Helper()
+
+	p, err := parser.NewParser(language)
+	if err != nil {
+		t.Fatalf("NewParser(%q): %v", language, err)
+	}
+
+	tree, err := p.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", language, err)
+	}
+	defer tree.Release()
+
+	entities := ExtractEntitiesByNodeTypes(tree.RootNode(), types.Language(language), src)
+	views := make([]entityView, 0, len(entities))
+	for _, e := range entities {
+		views = append(views, entityView{typ: e.Type, name: e.Name, sign: e.Signature, parent: e.Parent, source: e.Source})
+	}
+	return views, entities
+}
+
 //go:fix inline
 func strptr(s string) *string { return new(s) }
 
@@ -249,6 +275,14 @@ func TestIsEntityNodeType(t *testing.T) {
 		{"function_definition", types.LanguagePython, true},
 		{"function_definition", types.LanguageTypeScript, false},
 		{"not_a_node_type", types.LanguageGo, false},
+		// generator_function_declaration must be admitted for JS and TS, and
+		// only for those languages (it is a JS/TS grammar-specific node type).
+		{"generator_function_declaration", types.LanguageJavaScript, true},
+		{"generator_function_declaration", types.LanguageTypeScript, true},
+		{"generator_function_declaration", types.LanguageGo, false},
+		{"generator_function_declaration", types.LanguagePython, false},
+		{"generator_function_declaration", types.LanguageRust, false},
+		{"generator_function_declaration", types.LanguageJava, false},
 	}
 	for _, c := range cases {
 		if got := IsEntityNodeType(c.nodeType, c.language); got != c.want {
@@ -270,11 +304,156 @@ func TestGetEntityType(t *testing.T) {
 		{"trait_item", types.EntityTypeInterface, true},
 		{"use_declaration", types.EntityTypeImport, true},
 		{"nope", "", false},
+		// The walker needs GetEntityType to map generator_function_declaration
+		// to EntityTypeFunction so the Fix's EntityNodeTypes entry actually
+		// produces a typed entity.
+		{"generator_function_declaration", types.EntityTypeFunction, true},
 	}
 	for _, c := range cases {
 		got, ok := GetEntityType(c.nodeType)
 		if got != c.want || ok != c.ok {
 			t.Errorf("GetEntityType(%q) = (%s, %v), want (%s, %v)", c.nodeType, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// TestExtractEntitiesByNodeTypesJSGenerators pins the fix for the
+// generator_function_declaration omission from EntityNodeTypes: the
+// production walker must extract a named function entity for every
+// statement-position generator declaration it encounters, parallel to
+// what it already does for function_declaration. It also guards that
+// the fix does not perturb already-working forms (regular function
+// declarations, class generator methods parsed as method_definition) or
+// accidentally cover the generator-expression form (which is a different
+// node type and intentionally out of scope).
+func TestExtractEntitiesByNodeTypesJSGenerators(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []entityView
+		// wantRange pins the byte range of the FIRST entity when non-nil;
+		// ResolveDependencies' chunk-enclosure check (chunker/dependencies.go)
+		// relies on ByteRange being populated correctly for the gen entity.
+		wantFirstRange *types.ByteRange
+	}{
+		{
+			name: "regular function (regression guard)",
+			src:  "function foo() {}",
+			want: []entityView{
+				{typ: types.EntityTypeFunction, name: "foo", sign: "function foo()"},
+			},
+			wantFirstRange: &types.ByteRange{Start: 0, End: 17},
+		},
+		{
+			name: "non-exported generator",
+			src:  "function* gen() {}",
+			want: []entityView{
+				{typ: types.EntityTypeFunction, name: "gen", sign: "function* gen()"},
+			},
+			wantFirstRange: &types.ByteRange{Start: 0, End: 18},
+		},
+		{
+			name: "exported generator",
+			src:  "export function* gen() {}",
+			want: []entityView{
+				{typ: types.EntityTypeExport, name: "<anonymous>", sign: "export function* gen() {}"},
+				{typ: types.EntityTypeFunction, name: "gen", sign: "function* gen()"},
+			},
+		},
+		{
+			name: "nested generator inside a function body",
+			src:  "function outer() { function* inner() {} }",
+			want: []entityView{
+				{typ: types.EntityTypeFunction, name: "outer", sign: "function outer()"},
+				{typ: types.EntityTypeFunction, name: "inner", sign: "function* inner()", parent: new("outer")},
+			},
+		},
+		{
+			name: "class generator method (already covered, must not regress)",
+			src:  "class C { *g() {} }",
+			want: []entityView{
+				{typ: types.EntityTypeClass, name: "C", sign: "class C"},
+				{typ: types.EntityTypeMethod, name: "g", sign: "*g()", parent: new("C")},
+			},
+		},
+		{
+			name: "generator expression (out of scope, must stay 0)",
+			src:  "const f = function*() {}",
+			want: []entityView{},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			views, entities := collectViewsAndEntities(t, "javascript", tc.src)
+			if !reflect.DeepEqual(views, tc.want) {
+				t.Fatalf("entities = %+v, want %+v", views, tc.want)
+			}
+			if tc.wantFirstRange != nil {
+				if len(entities) == 0 {
+					t.Fatalf("expected at least one entity to assert byte range")
+				}
+				got := entities[0].ByteRange
+				if got.Start != tc.wantFirstRange.Start || got.End != tc.wantFirstRange.End {
+					t.Errorf("first entity ByteRange = [%d,%d), want [%d,%d)",
+						got.Start, got.End, tc.wantFirstRange.Start, tc.wantFirstRange.End)
+				}
+				if got := entities[0].LineRange; got.Start != 0 || got.End != 0 {
+					t.Errorf("first entity LineRange = %+v, want {0 0} (single-line declaration)", got)
+				}
+			}
+		})
+	}
+}
+
+// TestExtractEntitiesByNodeTypesTSGenerators mirrors the JS generator test
+// for the TypeScript EntityNodeTypes list: the same node type, the same fix.
+func TestExtractEntitiesByNodeTypesTSGenerators(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []entityView
+	}{
+		{
+			name: "regular function (regression guard)",
+			src:  "function foo() {}",
+			want: []entityView{
+				{typ: types.EntityTypeFunction, name: "foo", sign: "function foo()"},
+			},
+		},
+		{
+			name: "non-exported generator",
+			src:  "function* gen() {}",
+			want: []entityView{
+				{typ: types.EntityTypeFunction, name: "gen", sign: "function* gen()"},
+			},
+		},
+		{
+			name: "exported generator",
+			src:  "export function* gen() {}",
+			want: []entityView{
+				{typ: types.EntityTypeExport, name: "<anonymous>", sign: "export function* gen() {}"},
+				{typ: types.EntityTypeFunction, name: "gen", sign: "function* gen()"},
+			},
+		},
+		{
+			name: "nested generator inside a function body",
+			src:  "function outer() { function* inner() {} }",
+			want: []entityView{
+				{typ: types.EntityTypeFunction, name: "outer", sign: "function outer()"},
+				{typ: types.EntityTypeFunction, name: "inner", sign: "function* inner()", parent: new("outer")},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			views, _ := collectViewsAndEntities(t, "typescript", tc.src)
+			if !reflect.DeepEqual(views, tc.want) {
+				t.Fatalf("entities = %+v, want %+v", views, tc.want)
+			}
+		})
 	}
 }

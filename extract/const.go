@@ -9,6 +9,7 @@ import "github.com/RITIK-KHARYA/go-code-chunk/types"
 var EntityNodeTypes = map[types.Language][]string{
 	types.LanguageTypeScript: {
 		"function_declaration",
+		"generator_function_declaration",
 		"method_definition",
 		"class_declaration",
 		"interface_declaration",
@@ -19,6 +20,7 @@ var EntityNodeTypes = map[types.Language][]string{
 	},
 	types.LanguageJavaScript: {
 		"function_declaration",
+		"generator_function_declaration",
 		"method_definition",
 		"class_declaration",
 		"import_statement",
