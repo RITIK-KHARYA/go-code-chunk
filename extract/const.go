@@ -1,8 +1,10 @@
 package extract
 
-import "slices"
+import (
+	"slices"
 
-import "github.com/RITIK-KHARYA/go-code-chunk/types"
+	"github.com/RITIK-KHARYA/go-code-chunk/types"
+)
 
 // EntityNodeTypes are the AST node types considered extractable entities per
 // language.
@@ -16,12 +18,14 @@ var EntityNodeTypes = map[types.Language][]string{
 		"enum_declaration",
 		"import_statement",
 		"export_statement",
+		"generator_declaration",
 	},
 	types.LanguageJavaScript: {
 		"function_declaration",
 		"method_definition",
 		"class_declaration",
 		"import_statement",
+		"generator_declaration",
 		"export_statement",
 	},
 	types.LanguagePython: {
