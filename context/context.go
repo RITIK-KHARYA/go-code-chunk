@@ -15,6 +15,25 @@ import (
 // filtering, mirroring the TS /\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g regex.
 var identifierRe = regexp.MustCompile(`\b[a-zA-Z_$][a-zA-Z0-9_$]*\b`)
 
+// boundIdentRe matches a single ASCII letter or digit — the characters a real
+// binding is built from — and deliberately excludes "_". This lets
+// validBoundIdentifier reject the blank identifier "_" along with any
+// punctuation-only binding, so they never reach the \b…\b usage regex.
+var boundIdentRe = regexp.MustCompile(`[a-zA-Z0-9]`)
+
+// validBoundIdentifier reports whether bound is a usable whole-word binding for
+// the usage heuristic: it must contain at least one letter or digit. Bindings
+// without one — "" (default import), "*" (JS/Python wildcard), "." (Go dot
+// import) and "_" (Go blank import), or any other punctuation-only token — are
+// not a matchable identifier, so building a \b…\b regex from them would match
+// ordinary code rather than the import's binding (\b\.\b hits every "x.y";
+// \b_\b hits the ubiquitous blank identifier). Bindings that do contain
+// identifier characters stay matchable, including qualified/dotted names such
+// as Python "os.path".
+func validBoundIdentifier(bound string) bool {
+	return boundIdentRe.MatchString(bound)
+}
+
 // GetScopeForRange returns the scope chain enclosing the start of the byte
 // range, deepest scope first followed by its ancestors. It is the Go port of
 // the TS `getScopeForRange`.
@@ -112,7 +131,10 @@ func GetRelevantImports(entities []types.ChunkEntityInfo, scopeTree types.ScopeT
 //   - aliases: JS/TS import { x as y } -> y(), Python import a.b as c -> c()
 //
 // For unaliased multi-segment module paths (Go "github.com/x/y") the binding is
-// the last path segment.
+// the last path segment. Imports whose binding is not an identifier — Go dot
+// (`.`) and blank (`_`) imports, JS/Python `*` wildcards — are skipped: they
+// have no single whole-word binding, so matching them would annotate chunks
+// that never reference the package.
 func GetImportsUsedInText(text string, imports []types.ExtractedEntity) []types.ImportInfo {
 	if text == "" || len(imports) == 0 {
 		return []types.ImportInfo{}
@@ -121,12 +143,14 @@ func GetImportsUsedInText(text string, imports []types.ExtractedEntity) []types.
 	result := make([]types.ImportInfo, 0, len(imports))
 	for _, entity := range imports {
 		bound := entity.Name
-		if bound == "" || bound == "*" {
-			continue
-		}
 		// Unaliased multi-segment module paths bind their last path segment.
 		if i := strings.LastIndex(bound, "/"); i >= 0 {
 			bound = bound[i+1:]
+		}
+		// Skip non-identifier bindings (dot ".", blank "_", wildcard "*", "")
+		// which have no single whole-word token to match.
+		if !validBoundIdentifier(bound) {
+			continue
 		}
 		usedRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(bound) + `\b`)
 		if !usedRe.MatchString(text) {
