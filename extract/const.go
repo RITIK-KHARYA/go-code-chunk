@@ -60,9 +60,14 @@ var EntityNodeTypes = map[types.Language][]string{
 
 // CallNodeTypes are the AST node types representing function/method calls per
 // language. Each name has been verified against a real parse of that grammar.
+//
+// For JavaScript/TypeScript, new_expression (constructor calls like
+// `new Foo()`) is included alongside call_expression so project-defined
+// classes constructed via `new` are resolved as dependencies; the callee lives
+// under the `constructor` field (handled by calledName in chunker/dependencies.go).
 var CallNodeTypes = map[types.Language][]string{
-	types.LanguageTypeScript: {"call_expression"},
-	types.LanguageJavaScript: {"call_expression"},
+	types.LanguageTypeScript: {"call_expression", "new_expression"},
+	types.LanguageJavaScript: {"call_expression", "new_expression"},
 	types.LanguagePython:     {"call"},
 	types.LanguageRust:       {"call_expression"},
 	types.LanguageGo:         {"call_expression"},

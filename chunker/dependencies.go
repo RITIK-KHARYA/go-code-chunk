@@ -111,6 +111,23 @@ func calledName(call *gotreesitter.Node, lang *gotreesitter.Language, src []byte
 			return name.Text(src)
 		}
 		return ""
+	case "new_expression": // constructor call (JS / TS)
+		fn := call.ChildByFieldName("constructor", lang)
+		if fn == nil {
+			return ""
+		}
+		switch fn.Type(lang) {
+		case "identifier": // new Foo()
+			return fn.Text(src)
+		case "member_expression": // new pkg.Foo() -> take the final property
+			if prop := fn.ChildByFieldName("property", lang); prop != nil {
+				return prop.Text(src)
+			}
+			return ""
+		default:
+			// parenthesized_expression (new (factory())()), class (new class{...}()), etc.
+			return ""
+		}
 	default: // call_expression (Go / TS / JS / Rust)
 		fn := call.ChildByFieldName("function", lang)
 		if fn == nil {
