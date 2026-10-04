@@ -34,6 +34,15 @@ func capturesLen(t *testing.T, captures []types.CapturedVariable, want int) {
 	}
 }
 
+func captureHas(captures []types.CapturedVariable, name string) bool {
+	for _, cv := range captures {
+		if cv.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // TestCaptureParamsAndInferredLocals asserts a closure capturing a typed param
 // and an inferred local reports both with their types and declaration lines.
 func TestCaptureParamsAndInferredLocals(t *testing.T) {
@@ -282,5 +291,173 @@ func TestUnsupportedLanguageReturnsNil(t *testing.T) {
 	captures := ResolveCaptures(types.ByteRange{Start: 0, End: len(src)}, tree, src, types.LanguageTypeScript)
 	if len(captures) != 0 {
 		t.Errorf("unexpected captures for typescript: %v", captures)
+	}
+}
+
+// TestCaptureRangeClauseSingleVar asserts a closure capturing the single loop
+// variable of a `for i := range xs` loop reports it (previously dropped because
+// range_clause was never recorded as a declaration site). The element type is
+// left unknown ("") rather than inferred from the container.
+func TestCaptureRangeClauseSingleVar(t *testing.T) {
+	src := `package p
+
+func f() {
+	xs := []int{1, 2, 3}
+	for i := range xs {
+		_ = func() { _ = i }
+	}
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 1)
+	cv := findCapture(t, captures, "i")
+	if cv.Type != "" {
+		t.Errorf("range var i type = %q, want %q (unknown)", cv.Type, "")
+	}
+	if cv.DeclaredAt.Start != 4 || cv.DeclaredAt.End != 4 {
+		t.Errorf("i DeclaredAt = %+v, want row 4 (range clause line)", cv.DeclaredAt)
+	}
+}
+
+// TestCaptureRangeClauseTwoVarsSlice asserts both the index and element
+// variables of a `for i, v := range xs` loop are bindable by a closure.
+func TestCaptureRangeClauseTwoVarsSlice(t *testing.T) {
+	src := `package p
+
+func f() {
+	xs := []int{1, 2, 3}
+	for i, v := range xs {
+		_ = func() {
+			_ = v
+			_ = i
+		}
+	}
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 2)
+	for _, name := range []string{"i", "v"} {
+		cv := findCapture(t, captures, name)
+		if cv.Type != "" {
+			t.Errorf("range var %s type = %q, want %q (unknown)", name, cv.Type, "")
+		}
+		if cv.DeclaredAt.Start != 4 || cv.DeclaredAt.End != 4 {
+			t.Errorf("%s DeclaredAt = %+v, want row 4", name, cv.DeclaredAt)
+		}
+	}
+}
+
+// TestCaptureRangeClauseTwoVarsMap asserts both the key and value variables of
+// a `for k, v := range m` loop are bindable by a closure.
+func TestCaptureRangeClauseTwoVarsMap(t *testing.T) {
+	src := `package p
+
+func f() {
+	m := map[string]int{"a": 1}
+	for k, v := range m {
+		_ = func() {
+			_ = v
+			_ = k
+		}
+	}
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 2)
+	for _, name := range []string{"k", "v"} {
+		cv := findCapture(t, captures, name)
+		if cv.Type != "" {
+			t.Errorf("range var %s type = %q, want %q (unknown)", name, cv.Type, "")
+		}
+		if cv.DeclaredAt.Start != 4 || cv.DeclaredAt.End != 4 {
+			t.Errorf("%s DeclaredAt = %+v, want row 4", name, cv.DeclaredAt)
+		}
+	}
+}
+
+// TestCaptureRangeClauseBlankSkipped asserts a blank `_` loop variable is not
+// recorded as a declaration while the named companion is still captured.
+func TestCaptureRangeClauseBlankSkipped(t *testing.T) {
+	src := `package p
+
+func f() {
+	xs := []int{1, 2, 3}
+	for _, v := range xs {
+		_ = func() { _ = v }
+	}
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 1)
+	findCapture(t, captures, "v")
+	if captureHas(captures, "_") {
+		t.Errorf("captures = %+v, want no blank %q", captures, "_")
+	}
+}
+
+// TestCaptureRangeClauseVarReferencedOnlyOutsideClosure asserts that a range
+// loop variable that is referenced only outside any closure is not reported as
+// a capture, while a closed-over range variable in the same loop is.
+func TestCaptureRangeClauseVarReferencedOnlyOutsideClosure(t *testing.T) {
+	src := `package p
+
+func f() {
+	xs := []int{1, 2, 3}
+	for i, v := range xs {
+		_ = i
+		_ = func() { _ = v }
+	}
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 1)
+	findCapture(t, captures, "v")
+	if captureHas(captures, "i") {
+		t.Errorf("captures = %+v, want %q not captured (referenced only outside closure)", captures, "i")
+	}
+}
+
+// TestCaptureRangeClauseNoLoopVars asserts `for range xs` (no loop variables)
+// does not break capture resolution and the closed-over container is still
+// reported (it is a real short_var_declaration local).
+func TestCaptureRangeClauseNoLoopVars(t *testing.T) {
+	src := `package p
+
+func f() {
+	xs := []int{1, 2, 3}
+	for range xs {
+		_ = func() { _ = xs }
+	}
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 1)
+	cv := findCapture(t, captures, "xs")
+	if cv.Type != "[]int" {
+		t.Errorf("xs type = %q, want %q", cv.Type, "[]int")
+	}
+}
+
+// TestCaptureForLoopInitStillWorks asserts the non-range `for i := 0; ...`
+// form (whose init is a real short_var_declaration) still reports captures,
+// guarding against regressions in the existing, already-working path.
+func TestCaptureForLoopInitStillWorks(t *testing.T) {
+	src := `package p
+
+func f() {
+	n := 10
+	for i := 0; i < n; i++ {
+		_ = func() { _ = i }
+	}
+}
+`
+	captures := resolveCapturesFor(t, src, 0, len(src))
+	capturesLen(t, captures, 1)
+	cv := findCapture(t, captures, "i")
+	if cv.Type != "int" {
+		t.Errorf("for-init i type = %q, want %q", cv.Type, "int")
+	}
+	if cv.DeclaredAt.Start != 4 || cv.DeclaredAt.End != 4 {
+		t.Errorf("i DeclaredAt = %+v, want row 4", cv.DeclaredAt)
 	}
 }

@@ -581,3 +581,49 @@ func TestChunkContextCaptures(t *testing.T) {
 		t.Errorf("contextualized text missing %q;\ngot:\n%s", wantLine, chunks[0].ContextualizedText)
 	}
 }
+
+// goRangeCaptureSrc is a single function that launches a goroutine per range
+// element; the goroutine closure captures the range-loop variable. Prior to
+// range_clause being recorded as a declaration site, the captures line omitted
+// the captured variable entirely.
+const goRangeCaptureSrc = `package conn
+
+func process(items []string) {
+	for _, item := range items {
+		go func() { _ = item }()
+	}
+}
+`
+
+// TestChunkContextCapturesRangeLoop asserts the end-to-end pipeline (parse,
+// chunk, ResolveCaptures, format) annotates a chunk whose closure captures a
+// range-loop variable with a Captures line naming that variable.
+func TestChunkContextCapturesRangeLoop(t *testing.T) {
+	opts := types.ChunkOptions{Language: types.LanguageGo}
+	rootNode, scopeTree, language, err := parseSource("range_capture.go", goRangeCaptureSrc, opts)
+	if err != nil {
+		t.Fatalf("parseSource: %v", err)
+	}
+	chunks, err := ChunkCode(rootNode, goRangeCaptureSrc, scopeTree, language, opts, nil)
+	if err != nil {
+		t.Fatalf("ChunkCode: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected a single chunk, got %d", len(chunks))
+	}
+
+	captures := chunks[0].Context.Captures
+	if !captureHas(captures, "item") {
+		t.Errorf("captures = %+v, want range-loop variable %q captured", captures, "item")
+	}
+	if captureHas(captures, "items") {
+		t.Errorf("captures = %+v, want %q not captured (referenced only outside the closure)", captures, "items")
+	}
+
+	// Range element type is intentionally left unknown (""), so it renders
+	// as the bare name with no parenthesized type.
+	wantLine := "// Captures: item"
+	if !strings.Contains(chunks[0].ContextualizedText, wantLine) {
+		t.Errorf("contextualized text missing %q;\ngot:\n%s", wantLine, chunks[0].ContextualizedText)
+	}
+}
