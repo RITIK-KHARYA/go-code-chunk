@@ -240,6 +240,49 @@ func TestGetImportsUsedInText(t *testing.T) {
 			t.Fatalf("substring inside longer identifier = %+v, want empty", got)
 		}
 	})
+
+	// Rust aliased `use` must bind the alias so the always-on
+	// GetImportsUsedInText path (chunker.go) keeps the import in the chunk
+	// context. Exercises the real extract.ExtractEntitiesByNodeTypes ->
+	// scopeTree.Imports -> GetImportsUsedInText pipeline end-to-end.
+	t.Run("rust aliased use end-to-end", func(t *testing.T) {
+		src := `use std::collections::{HashMap as Map, HashSet};
+use std::io::Write as W;
+
+fn main() {}
+`
+		_, tree := buildTreeFor(t, src, "rust")
+
+		// Real import entities, produced by the extractor exactly as the
+		// chunker populates scopeTree.Imports.
+		var imports []types.ExtractedEntity
+		for _, e := range tree.AllEntities {
+			if e.Type == types.EntityTypeImport {
+				imports = append(imports, e)
+			}
+		}
+		// The body uses the aliases (Map, W) and one unaliased name
+		// (HashSet); never the raw `HashMap as Map` / `std::io::Write as W`
+		// strings that the buggy extractor would have bound.
+		body := "fn f() { let m = Map::new(); let s = HashSet::new(); W::write(); }"
+		got := GetImportsUsedInText(body, imports)
+		var names []string
+		for _, u := range got {
+			names = append(names, u.Name)
+		}
+		wantNames := []string{"Map", "HashSet", "W"}
+		if len(got) != len(wantNames) {
+			t.Fatalf("rust aliased used = %v, want %v (imports=%+v)", names, wantNames, imports)
+		}
+		for i := range wantNames {
+			if names[i] != wantNames[i] {
+				t.Fatalf("rust aliased used = %v, want %v (imports=%+v)", names, wantNames, imports)
+			}
+		}
+		if got[0].Source != "std::collections" || got[2].Source != "std::io::Write" {
+			t.Fatalf("rust aliased sources = %+v, want Map->std::collections, W->std::io::Write", got)
+		}
+	})
 }
 
 func TestGetRelevantImports(t *testing.T) {

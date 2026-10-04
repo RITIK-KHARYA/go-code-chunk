@@ -200,6 +200,20 @@ func TestExtractImportSource(t *testing.T) {
 			want:    "std::collections",
 		},
 		{
+			name:    "rust top-level aliased use",
+			lang:    "rust",
+			src:     "use std::io::Write as W;\n",
+			pattern: "(use_declaration) @u",
+			want:    "std::io::Write",
+		},
+		{
+			name:    "rust top-level aliased use single segment",
+			lang:    "rust",
+			src:     "use foo as bar;\n",
+			pattern: "(use_declaration) @u",
+			want:    "foo",
+		},
+		{
 			name:    "typescript import",
 			lang:    "typescript",
 			src:     "import { readFile } from \"node:fs\";\n",
