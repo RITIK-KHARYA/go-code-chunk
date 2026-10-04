@@ -245,19 +245,26 @@ func TestGetBodyDelimiter(t *testing.T) {
 func TestFindBodyDelimiterPos(t *testing.T) {
 	cases := []struct {
 		name, text, delimiter string
+		language              types.Language
 		want                  int
 	}{
-		{"paren", "func f(a, b int) int {", "{", 21},
-		{"generic", "interface Box<T> {}", "{", 17},
-		{"string", "const s = {\"}\"};", "{", 10},
-		{"missing", "no delimiter here", "{", -1},
-		{"negative-depth", "func f() ) {", "{", -1},
-		{"le-not-generic", "a <= b {", "{", 7},
-		{"dbl-lt-generic", "a << b {", "{", -1},
-		{"py-colon-outside-params", "def f(a: int): {}", ":", 13},
+		{"paren", "func f(a, b int) int {", "{", types.LanguageTypeScript, 21},
+		{"generic", "interface Box<T> {}", "{", types.LanguageTypeScript, 17},
+		{"string double quotes", "const s = {\"}\"};", "{", types.LanguageTypeScript, 10},
+		{"string single quotes", "const s = {'}'};\n", "{", types.LanguageTypeScript, 10},
+
+		{"missing", "no delimiter here", "{", types.LanguageTypeScript, -1},
+		{"negative-depth", "func f() ) {", "{", types.LanguageTypeScript, -1},
+		{"le-not-generic", "a <= b {", "{", types.LanguageTypeScript, 7},
+		{"dbl-lt-generic", "a << b {", "{", types.LanguageTypeScript, -1},
+		{"py-colon-outside-params", "def f(a: int): {}", ":", types.LanguagePython, 13},
+		// Rust-specific cases: single quotes should NOT be treated as string delimiters
+		{"rust lifetime single", "struct Foo<'a> {", "{", types.LanguageRust, 15},
+		{"rust lifetime multiple", "struct Foo<'a, 'b> {", "{", types.LanguageRust, 19},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+
 			if got := findBodyDelimiterPos(tc.text, tc.delimiter, types.LanguageGo); got != tc.want {
 				t.Fatalf("findBodyDelimiterPos(%q, %q) = %d, want %d", tc.text, tc.delimiter, got, tc.want)
 			}
@@ -305,10 +312,22 @@ func TestRustLifetimeSignatures(t *testing.T) {
 		et                 types.EntityType
 		want               string
 	}{
+
+			if got := findBodyDelimiterPos(tc.text, tc.delimiter, tc.language); got != tc.want {
+				t.Fatalf("findBodyDelimiterPos(%q, %q, %s) = %d, want %d", tc.text, tc.delimiter, tc.language, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRustLifetimeSignatures(t *testing.T) {
+	cases := []struct{ name, src, pattern string; et types.EntityType; want string }{
+
 		{"struct single lifetime", "struct Foo<'a> { x: &'a i32 }\n",
 			"(struct_item) @s", types.EntityTypeType, "struct Foo<'a>"},
 		{"enum single lifetime", "enum Foo<'a> { A(&'a i32) }\n",
 			"(enum_item) @s", types.EntityTypeEnum, "enum Foo<'a>"},
+
 		{"struct two lifetimes", "struct Foo<'a, 'b> { x: &'a i32 }\n",
 			"(struct_item) @s", types.EntityTypeType, "struct Foo<'a, 'b>"},
 		{"struct no lifetime", "struct Foo<T> { x: T }\n",
@@ -319,15 +338,28 @@ func TestRustLifetimeSignatures(t *testing.T) {
 			"(enum_item) @s", types.EntityTypeEnum, "enum Color<'a>"},
 		{"type alias no brace", "type Foo = u32;\n",
 			"(type_item) @t", types.EntityTypeType, "type Foo"},
+		{"struct no lifetime", "struct Foo<T> { x: T }\n",
+			"(struct_item) @s", types.EntityTypeType, "struct Foo<T>"}, // control
+		{"struct multiple lifetimes", "struct Foo<'a, 'b> { x: &'a i32, y: &'b str }\n",
+			"(struct_item) @s", types.EntityTypeType, "struct Foo<'a, 'b>"},
+		{"enum multiple lifetimes", "enum Bar<'x, 'y> { A(&'x i32), B(&'y str) }\n",
+			"(enum_item) @e", types.EntityTypeEnum, "enum Bar<'x, 'y>"},
+		{"type with lifetime", "type Baz<'a> = &'a str;\n",
+			"(type_item) @t", types.EntityTypeType, "type Baz<'a>"},
+
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tree, node := firstCaptured(t, "rust", tc.src, tc.pattern)
 			defer tree.Release()
 			got := ExtractSignature(node, tc.et, types.LanguageRust, tc.src)
+
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
+
+			if got != tc.want { t.Errorf("got %q, want %q", got, tc.want) }
+
 		})
 	}
 }

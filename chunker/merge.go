@@ -12,9 +12,22 @@ type MergeOptions struct {
 }
 
 // CanMerge reports whether two windows can be merged without exceeding maxSize.
-// It is the Go port of the TS `canMerge`.
+// It is the Go port of the TS `canMerge`, with an additional guard: a partial
+// (line-split) window may not merge with a normal window. A partial window is
+// rebuilt from its LineRanges, while a normal window is rebuilt by slicing the
+// original source span; merging the two yields a window whose IsPartialNode is
+// true but whose LineRanges is empty, which RebuildText cannot reconstruct
+// correctly (it falls through to the byte-slice path and emits the whole
+// partial node, producing an oversized chunk). Both windows must therefore be
+// partial, or both must be normal, in addition to fitting within maxSize.
 func CanMerge(a, b types.ASTWindow, maxSize int) bool {
-	return a.Size+b.Size <= maxSize
+	if a.Size+b.Size > maxSize {
+		return false
+	}
+	if isPartialWindow(a) != isPartialWindow(b) {
+		return false
+	}
+	return true
 }
 
 // MergeWindows merges two windows into one. It is the Go port of the TS
