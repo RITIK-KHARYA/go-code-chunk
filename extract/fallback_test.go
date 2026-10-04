@@ -61,7 +61,7 @@ func main() {
 
 	want := []entityView{
 		{typ: types.EntityTypeImport, name: "fmt", sign: "fmt", source: new("fmt")},
-		{typ: types.EntityTypeType, name: "<anonymous>", sign: "type Person struct"},
+		{typ: types.EntityTypeType, name: "Person", sign: "type Person struct"},
 		{typ: types.EntityTypeMethod, name: "Greet", sign: "func (p *Person) Greet() string"},
 		{typ: types.EntityTypeFunction, name: "main", sign: "func main()"},
 	}
@@ -69,6 +69,60 @@ func main() {
 	got := collectViews(t, "go", src)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("entities = %+v, want %+v", got, want)
+	}
+}
+
+// TestExtractEntitiesByNodeTypesGoTypeKinds asserts that every single-spec Go
+// type declaration kind (struct, interface, alias) is extracted with its real
+// name rather than "<anonymous>", so it lands in ByName under the correct key.
+func TestExtractEntitiesByNodeTypesGoTypeKinds(t *testing.T) {
+	src := `package main
+
+type Person struct {
+	Name string
+}
+
+type Reader interface {
+	Read(p []byte) (n int, err error)
+}
+
+type MyInt int
+`
+	want := []entityView{
+		{typ: types.EntityTypeType, name: "Person", sign: "type Person struct"},
+		{typ: types.EntityTypeType, name: "Reader", sign: "type Reader interface"},
+		{typ: types.EntityTypeType, name: "MyInt", sign: "type MyInt int"},
+	}
+
+	got := collectViews(t, "go", src)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entities = %+v, want %+v", got, want)
+	}
+}
+
+// TestExtractEntitiesByNodeTypesGoGroupedType asserts that a grouped Go type
+// declaration emits exactly one entity whose name is "<anonymous>": the
+// fallback matches type_declaration (not per type_spec), so naming the group
+// after the first spec would mislabel it. This guards against a regression in
+// the single-spec gate in ExtractName.
+func TestExtractEntitiesByNodeTypesGoGroupedType(t *testing.T) {
+	src := `package main
+
+type (
+	A int
+	B string
+	C struct{ X int }
+)
+`
+	got := collectViews(t, "go", src)
+	if len(got) != 1 {
+		t.Fatalf("entities = %+v, want exactly 1 group entity", got)
+	}
+	if got[0].typ != types.EntityTypeType {
+		t.Errorf("entity type = %s, want %s", got[0].typ, types.EntityTypeType)
+	}
+	if got[0].name != "<anonymous>" {
+		t.Errorf("grouped entity name = %q, want %q (grouped declarations stay unnamed)", got[0].name, "<anonymous>")
 	}
 }
 
