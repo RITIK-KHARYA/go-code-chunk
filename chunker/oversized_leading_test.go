@@ -247,3 +247,251 @@ func TestRustOversizedDocComment(t *testing.T) {
 	}
 	assertNoChunkExceeds(t, chunks, maxSize)
 }
+
+// chunkSourceLines returns the number of source lines a chunk's text spans,
+// ignoring a single trailing newline so a one-line chunk like "x\n" reports 1.
+func chunkSourceLines(text string) int {
+	return strings.Count(strings.TrimRight(text, "\n"), "\n") + 1
+}
+
+// assertNoMultiLineOversizedChunk fails the test if any chunk whose NWS exceeds
+// maxSize spans more than one source line. A single oversized source line is
+// the documented unsplittable-line exception (see
+// TestSingleUnsplittableOversizedLineIsAllowedExceeds); a multi-source-line
+// oversized chunk is a real MaxChunkSize violation that the chunker must never
+// emit.
+func assertNoMultiLineOversizedChunk(t *testing.T, chunks []types.Chunk, maxSize int) {
+	t.Helper()
+	multi := 0
+	for i, c := range chunks {
+		nws := CountNws(c.Text)
+		lines := chunkSourceLines(c.Text)
+		t.Logf("chunk %d NWS=%d/%d srcLines=%d text=%q", i, nws, maxSize, lines, c.Text)
+		if nws > maxSize && lines > 1 {
+			multi++
+			t.Errorf("chunk %d is a multi-source-line oversized chunk: NWS=%d maxSize=%d lines=%d text=%q",
+				i, nws, maxSize, lines, c.Text)
+		}
+	}
+	if multi != 0 {
+		t.Fatalf("expected no multi-source-line oversized chunks, got %d", multi)
+	}
+}
+
+// firstLineContaining returns the 0-indexed source line number of the first
+// occurrence of substr in src, or -1 if absent.
+func firstLineContaining(src, substr string) int {
+	idx := strings.Index(src, substr)
+	if idx < 0 {
+		return -1
+	}
+	return strings.Count(src[:idx], "\n")
+}
+
+// TestAbsorbOversizeSameLineStringRejectsMultiLineOversizedChunk is the
+// end-to-end regression test for the absorbIntoLastSplit over-extension bug.
+// An oversized leading block comment line-split into partial windows must NOT
+// absorb a following declaration whose first sub-window ends mid-line (here the
+// `var`/`x =`/`"` header of `var x = "<huge string>"`), because
+// rebuildFromLineRanges would then rebuild the WHOLE declaration line —
+// including the oversized same-line string that belongs to a later window —
+// producing a multi-source-line chunk that exceeds MaxChunkSize and overlaps
+// the string's own window. The fix guards the absorb on
+// trailingLineIsWhitespace so the absorb is skipped when non-whitespace
+// sibling content follows the first sub-window's last node.
+func TestAbsorbOversizeSameLineStringRejectsMultiLineOversizedChunk(t *testing.T) {
+	const maxSize = 200
+	comment := oversizedBlockComment(10, 6) // ~244 NWS, exceeds maxSize
+	big := "var x = \"" + strings.Repeat("word ", 60) + "\"\n"
+	src := "package p\n\n" + comment + "\n\n" + big
+
+	rootNode, scopeTree, language, err := parseSource("test.go", src, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone, Language: types.LanguageGo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ChunkCode(rootNode, src, scopeTree, language, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoMultiLineOversizedChunk(t, chunks, maxSize)
+}
+
+// TestAbsorbedCommentChunkDoesNotOverlapSameLineSibling pins the specific
+// overlap the bug introduced. Before the fix, absorbIntoLastSplit extended the
+// comment chunk's last LineRange.End to the var declaration's line, so the
+// whole var line (including the oversized string) appeared in BOTH the
+// absorbed comment chunk and the string's own window. After the fix the
+// comment's last line-split chunk must end strictly before the var line and
+// must not contain any of the declaration's text.
+func TestAbsorbedCommentChunkDoesNotOverlapSameLineSibling(t *testing.T) {
+	const maxSize = 200
+	comment := oversizedBlockComment(10, 6)
+	big := "var x = \"" + strings.Repeat("word ", 60) + "\"\n"
+	src := "package p\n\n" + comment + "\n\n" + big
+
+	rootNode, scopeTree, language, err := parseSource("test.go", src, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone, Language: types.LanguageGo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ChunkCode(rootNode, src, scopeTree, language, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	varLine := firstLineContaining(src, "var x =")
+	if varLine < 0 {
+		t.Fatal("could not locate `var x =` in source")
+	}
+
+	var commentChunk *types.Chunk
+	for i := range chunks {
+		if strings.Contains(chunks[i].Text, "*/") {
+			commentChunk = &chunks[i]
+			break
+		}
+	}
+	if commentChunk == nil {
+		t.Fatal("no chunk containing the comment close */")
+	}
+	if commentChunk.LineRange.End >= varLine {
+		t.Errorf("comment chunk LineRange.End=%d should be < var line %d; text=%q",
+			commentChunk.LineRange.End, varLine, commentChunk.Text)
+	}
+	if strings.Contains(commentChunk.Text, "var x =") {
+		t.Errorf("comment chunk leaked the var declaration line into the absorbed chunk: %q",
+			commentChunk.Text)
+	}
+}
+
+// TestAbsorbOversizeSameLineStringJavaScript confirms the language-agnostic
+// guard holds across grammars: an oversized JS block comment preceding a
+// single-line const whose initializer is a huge same-line string literal must
+// not yield a multi-source-line oversized absorbed chunk.
+func TestAbsorbOversizeSameLineStringJavaScript(t *testing.T) {
+	const maxSize = 200
+	comment := oversizedBlockComment(10, 6)
+	big := "const x = \"" + strings.Repeat("word ", 60) + "\";\n"
+	src := comment + "\n\n" + big
+
+	rootNode, scopeTree, language, err := parseSource("test.js", src, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone, Language: types.LanguageJavaScript,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ChunkCode(rootNode, src, scopeTree, language, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoMultiLineOversizedChunk(t, chunks, maxSize)
+}
+
+// TestAbsorbStillHappensWhenDeclarationEndsAtEndOfLine pins the non-regression
+// half of the fix: when the declaration's first sub-window ends at the end of
+// its line (only whitespace follows, up to the newline), the absorb MUST still
+// fire so the declaration stays glued to the comment's last line-split chunk.
+// This is the case the commit's existing coverage exercised; the new guard must
+// not regress it. Verified end-to-end via ChunkCode.
+func TestAbsorbStillHappensWhenDeclarationEndsAtEndOfLine(t *testing.T) {
+	const maxSize = 200
+	comment := oversizedBlockComment(15, 8) // 484 NWS
+	src := "package p\n\n" + comment + "\n\nvar x = 1\n"
+
+	rootNode, scopeTree, language, err := parseSource("test.go", src, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone, Language: types.LanguageGo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ChunkCode(rootNode, src, scopeTree, language, types.ChunkOptions{
+		MaxChunkSize: maxSize, ContextMode: types.ContextModeNone,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The absorb must have fired: exactly one chunk contains BOTH the comment
+	// close "*/" and the declaration "var x = 1".
+	var attached *types.Chunk
+	for i := range chunks {
+		if strings.Contains(chunks[i].Text, "*/") && strings.Contains(chunks[i].Text, "var x = 1") {
+			attached = &chunks[i]
+			break
+		}
+	}
+	if attached == nil {
+		t.Fatalf("declaration not absorbed into the comment's last split; chunks:\n%s",
+			strings.Join(chunkTexts(chunks), "\n---\n"))
+	}
+	// The absorb's Size sum is accurate (declaration's last node is end-of-line),
+	// so the absorbed chunk must respect MaxChunkSize.
+	if nws := CountNws(attached.Text); nws > maxSize {
+		t.Errorf("absorbed chunk NWS=%d exceeds maxSize=%d; text=%q", nws, maxSize, attached.Text)
+	}
+	assertNoMultiLineOversizedChunk(t, chunks, maxSize)
+}
+
+// TestTrailingLineIsWhitespace exercises the guard helper directly. It returns
+// true only when every character from the node's end byte up to (but not
+// including) the next newline is whitespace.
+func TestTrailingLineIsWhitespace(t *testing.T) {
+	// nil node: nothing trailing, vacuously safe.
+	if !trailingLineIsWhitespace(nil, "anything\n") {
+		t.Error("nil node should be vacuously whitespace-only")
+	}
+
+	// var_spec `x = 1` ends right before a newline (end of line): safe.
+	// identifier `a` inside call(a, b) ends mid-line followed by ", b)": unsafe.
+	src := "package p\n\nvar x = 1\nvar y = call(a, b)\n"
+	root, lang := parseForTest(t, "go", src)
+	var varSpecX, argA types.SyntaxNode
+	var walk func(n types.SyntaxNode)
+	walk = func(n types.SyntaxNode) {
+		nn := tsNode(n)
+		if nn.Type(lang) == "var_spec" && varSpecX == nil {
+			if txt := src[nn.StartByte():nn.EndByte()]; txt == "x = 1" {
+				varSpecX = n
+			}
+		}
+		if nn.Type(lang) == "identifier" && argA == nil {
+			if txt := src[nn.StartByte():nn.EndByte()]; txt == "a" {
+				argA = n
+			}
+		}
+		for i := 0; i < nn.ChildCount(); i++ {
+			if c := nn.Child(i); c != nil {
+				walk(types.SyntaxNode(c))
+			}
+		}
+	}
+	walk(root)
+	if varSpecX == nil {
+		t.Fatal("var_spec `x = 1` not found")
+	}
+	if argA == nil {
+		t.Fatal("identifier `a` not found")
+	}
+	if !trailingLineIsWhitespace(varSpecX, src) {
+		t.Errorf("var_spec ending at end of line should be whitespace-only")
+	}
+	if trailingLineIsWhitespace(argA, src) {
+		t.Errorf("identifier `a` followed by `, b)` should NOT be whitespace-only")
+	}
+
+	// Node at EOF with no trailing newline: trailing rest is empty, safe.
+	srcEOF := "package p"
+	rootEOF, _ := parseForTest(t, "go", srcEOF)
+	if !trailingLineIsWhitespace(rootEOF, srcEOF) {
+		t.Errorf("root at EOF with no trailing newline should be whitespace-only")
+	}
+}
