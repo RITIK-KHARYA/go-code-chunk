@@ -252,8 +252,22 @@ func splitOversizedGroup(group []types.SyntaxNode, code string, cumsum NwsCumsum
 			// Only absorb a normal (non-partial) sub-window: extending a
 			// partial split's line range over another partial sub-window
 			// would discard the latter's own per-line ranges.
+			//
+			// Only absorb when the rest of firstTop's last node's line is
+			// whitespace. rebuildFromLineRanges reconstructs whole lines,
+			// so extending the line range to firstTop's end line would
+			// otherwise pull in any sibling content that shares that line
+			// and belongs to a later window (e.g. an oversized string
+			// literal on the same line as `var x =`). That would inflate
+			// the absorbed chunk beyond its recorded Size and MaxChunkSize
+			// and overlap the sibling's own window. When the guard fails,
+			// firstTop stays a separate normal window — exactly as it
+			// already does when firstTop is itself partial — so the
+			// MaxChunkSize invariant and neighbor boundaries are preserved.
 			if isPartialWindow(last) && len(last.LineRanges) > 0 &&
-				last.Size+firstTop.Size <= maxSize && !isPartialWindow(firstTop) {
+				last.Size+firstTop.Size <= maxSize && !isPartialWindow(firstTop) &&
+				len(firstTop.Nodes) > 0 &&
+				trailingLineIsWhitespace(firstTop.Nodes[len(firstTop.Nodes)-1], code) {
 				prefix[len(prefix)-1] = absorbIntoLastSplit(last, firstTop)
 				topWindows = topWindows[1:]
 			}
@@ -297,7 +311,10 @@ func prependLeadingComments(w types.ASTWindow, glue []types.SyntaxNode, glueNws 
 // their nodes/ancestors. last must be a partial window with LineRanges and
 // swallowed must be a normal window. The resulting Size is the sum, which is
 // accurate because any gap between last's last line and swallowed's last line
-// is a blank separator (0 NWS): top immediately follows the comment run.
+// is a blank separator (0 NWS): top immediately follows the comment run, AND
+// swallowed's last node is the last non-whitespace content on its line (the
+// call site enforces this via trailingLineIsWhitespace, so the whole-line
+// rebuild pulls in no extra NWS from a later sibling sharing the line).
 func absorbIntoLastSplit(last, swallowed types.ASTWindow) types.ASTWindow {
 	nodes := append(append([]types.SyntaxNode{}, last.Nodes...), swallowed.Nodes...)
 	lineRanges := last.LineRanges
@@ -317,6 +334,27 @@ func absorbIntoLastSplit(last, swallowed types.ASTWindow) types.ASTWindow {
 		IsPartialNode: last.IsPartialNode,
 		LineRanges:    lineRanges,
 	}
+}
+
+// trailingLineIsWhitespace reports whether every character from node's end
+// byte up to (but not including) the next newline is whitespace. When true,
+// rebuildFromLineRanges' whole-line rebuild of a LineRange whose End is
+// extended to node's end line emits only node's own trailing whitespace and
+// no extra NWS, so Size = last.Size + swallowed.Size stays accurate and no
+// neighbor window on the same line is overlapped. When false, a later
+// sibling sharing node's line would be pulled into the whole-line rebuild,
+// inflating the absorbed chunk beyond its recorded Size (and MaxChunkSize)
+// and overlapping the sibling's own window.
+func trailingLineIsWhitespace(node types.SyntaxNode, code string) bool {
+	if node == nil {
+		return true
+	}
+	endByte := int(tsNode(node).EndByte())
+	rest := code[endByte:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	return CountNws(rest) == 0
 }
 
 // emitSmallLeafRun packs a run of small leaf nodes (each with NWS ≤ maxSize)
