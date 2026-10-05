@@ -222,6 +222,73 @@ func TestChunkTypeConversionDependencyResolved(t *testing.T) {
 	}
 }
 
+// goAliasConvSrc defines a single Go type alias (Bytes = []byte) and a
+// function that converts to it via Bytes(s). tree-sitter parses `type Bytes =
+// []byte` with a `type_alias` child (not `type_spec`); before ExtractName
+// counted `type_alias`, the alias entity was extracted under "<anonymous>",
+// so ByName["Bytes"] missed and the Bytes(s) conversion edge was silently
+// dropped. This is the alias analogue of TestChunkTypeConversionDependencyResolved.
+const goAliasConvSrc = `package main
+
+type Bytes = []byte
+
+func toBytes(s string) Bytes {
+	return Bytes(s)
+}
+`
+
+// TestChunkTypeAliasConversionDependencyResolved asserts that a Go
+// type-conversion call to a single type alias (A(x) where A is `type A =
+// ...`) resolves to the alias entity as a dependency: the alias must carry its
+// real name in the scope tree and ByName index (not "<anonymous>"), and the
+// calling function's chunk must list the alias type as a dependency.
+func TestChunkTypeAliasConversionDependencyResolved(t *testing.T) {
+	opts := types.ChunkOptions{Language: types.LanguageGo, MaxChunkSize: 2000}
+	rootNode, scopeTree, language, err := parseSource("alias.go", goAliasConvSrc, opts)
+	if err != nil {
+		t.Fatalf("parseSource: %v", err)
+	}
+	chunks, err := ChunkCode(rootNode, goAliasConvSrc, scopeTree, language, opts, nil)
+	if err != nil {
+		t.Fatalf("ChunkCode: %v", err)
+	}
+
+	// The alias entity must be extractable by its real name (regression: was
+	// "<anonymous>" before ExtractName counted the type_alias child).
+	bytesAlias := findEntityName(t, scopeTree, "Bytes")
+	if bytesAlias.Type != types.EntityTypeType {
+		t.Fatalf("Bytes alias entity type = %s, want %s", bytesAlias.Type, types.EntityTypeType)
+	}
+	if bytesAlias.Signature != "type Bytes" {
+		t.Errorf("Bytes alias signature = %q, want %q", bytesAlias.Signature, "type Bytes")
+	}
+	toBytes := findEntityName(t, scopeTree, "toBytes")
+
+	var toBytesChunk types.Chunk
+	found := false
+	for _, ch := range chunks {
+		if scope.RangeContains(ch.ByteRange, toBytes.ByteRange) {
+			toBytesChunk = ch
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no chunk fully covers toBytes")
+	}
+
+	toBytesEnt := entityInfoInChunk(t, toBytesChunk, toBytes.Name)
+	bytesDep, ok := depHas(toBytesEnt.Dependencies, bytesAlias.Name)
+	if !ok {
+		t.Fatalf("toBytes deps = %+v, want dependency on %q (alias type conversion)", toBytesEnt.Dependencies, bytesAlias.Name)
+	}
+	if bytesDep.Type != types.EntityTypeType {
+		t.Errorf("Bytes dep type = %s, want %s", bytesDep.Type, types.EntityTypeType)
+	}
+	if bytesDep.Signature != "type Bytes" {
+		t.Errorf("Bytes dep signature = %q, want %q", bytesDep.Signature, "type Bytes")
+	}
+}
+
 // TestBuildProjectIndexGoTypeByName asserts the project-wide ByName index keys
 // single-spec Go types under their real name (not "<anonymous>"), so the
 // dependency resolver and other name-based consumers can look them up. A
@@ -260,5 +327,47 @@ func TestBuildProjectIndexGoTypeByName(t *testing.T) {
 	}
 	if grouped[0].Filepath != "grouped.go" {
 		t.Errorf("ByName[<anonymous>][0].Filepath = %q, want %q", grouped[0].Filepath, "grouped.go")
+	}
+}
+
+// TestBuildProjectIndexGoTypeAliasByName asserts the project-wide ByName index
+// keys single-spec Go type aliases (`type Bytes = []byte`) under their real
+// name (not "<anonymous>"), so the dependency resolver can look them up for
+// conversion calls like Bytes(s). A grouped alias declaration still collapses
+// under "<anonymous>" — the documented single-spec gate behavior. This is the
+// alias analogue of TestBuildProjectIndexGoTypeByName.
+func TestBuildProjectIndexGoTypeAliasByName(t *testing.T) {
+	files := []types.FileInput{
+		{Filepath: "alias_single.go", Code: "package main\ntype Bytes = []byte\n"},
+		{Filepath: "alias_grouped.go", Code: "package main\ntype (\n\tA = int\n\tB = string\n)\n"},
+	}
+	index, err := BuildProjectIndex(files, types.BatchOptions{
+		ChunkOptions: types.ChunkOptions{Language: types.LanguageGo, MaxChunkSize: 2000},
+	})
+	if err != nil {
+		t.Fatalf("BuildProjectIndex: %v", err)
+	}
+
+	bytesGroup, ok := index.ByName["Bytes"]
+	if !ok || len(bytesGroup) != 1 {
+		t.Fatalf("ByName[Bytes] = %+v, want exactly 1 entry (alias was collapsed under <anonymous> before fix)", bytesGroup)
+	}
+	if bytesGroup[0].Entity.Name != "Bytes" {
+		t.Errorf("ByName[Bytes][0].Name = %q, want %q", bytesGroup[0].Entity.Name, "Bytes")
+	}
+	if bytesGroup[0].Entity.Type != types.EntityTypeType {
+		t.Errorf("ByName[Bytes][0].Type = %s, want %s", bytesGroup[0].Entity.Type, types.EntityTypeType)
+	}
+	if bytesGroup[0].Filepath != "alias_single.go" {
+		t.Errorf("ByName[Bytes][0].Filepath = %q, want %q", bytesGroup[0].Filepath, "alias_single.go")
+	}
+
+	// Grouped alias declaration stays unnamed: one entity under "<anonymous>".
+	grouped, hasGrouped := index.ByName["<anonymous>"]
+	if !hasGrouped || len(grouped) != 1 {
+		t.Fatalf("ByName[<anonymous>] = %+v, want exactly 1 grouped entry (grouped aliases stay unnamed)", grouped)
+	}
+	if grouped[0].Filepath != "alias_grouped.go" {
+		t.Errorf("ByName[<anonymous>][0].Filepath = %q, want %q", grouped[0].Filepath, "alias_grouped.go")
 	}
 }
