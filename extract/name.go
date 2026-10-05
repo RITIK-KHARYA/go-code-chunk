@@ -24,21 +24,24 @@ func ExtractName(node *gotreesitter.Node, language types.Language, code string) 
 	}
 
 	// Go type_declaration: the name lives on the grandchild
-	// type_spec.name (type_identifier), which none of the shallow loops
-	// below reach. Only single-spec declarations are named; a grouped
-	// `type ( A int; B string )` emits one entity for the whole group, so
-	// naming it after the first spec would silently mislabel it — leave
-	// those as "<anonymous>" via the (false) return below.
+	// type_spec.name / type_alias.name (type_identifier), neither of which the
+	// shallow loops below reach. Only single-spec declarations are named; a
+	// grouped `type ( A int; B string )` or `type ( A = int; B = string )`
+	// emits one entity for the whole group, so naming it after the first spec
+	// would silently mislabel it — leave those as "<anonymous>" via the
+	// (false) return below. Both spec kinds (`type_spec` for `type Foo int`
+	// and `type_alias` for `type Foo = Bar`) expose a `name` field, so count
+	// and pick from either.
 	if hasType(node, lang, "type_declaration") {
 		specCount := 0
 		for _, child := range node.Children() {
-			if hasType(child, lang, "type_spec") {
+			if hasType(child, lang, "type_spec", "type_alias") {
 				specCount++
 			}
 		}
 		if specCount == 1 {
 			for _, child := range node.Children() {
-				if hasType(child, lang, "type_spec") {
+				if hasType(child, lang, "type_spec", "type_alias") {
 					if nameNode := child.ChildByFieldName("name", lang); nameNode != nil {
 						return nameNode.Text([]byte(code)), true
 					}
